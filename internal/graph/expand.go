@@ -5,15 +5,16 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/rs/zerolog/log"
-	"github.com/shopspring/decimal"
+	"github.com/authzed/spicedb/internal/caveats"
 
 	"github.com/authzed/spicedb/internal/dispatch"
+	log "github.com/authzed/spicedb/internal/logging"
 	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/internal/namespace"
 	"github.com/authzed/spicedb/pkg/datastore"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	v1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
+	"github.com/authzed/spicedb/pkg/spiceerrors"
 )
 
 // NewConcurrentExpander creates an instance of ConcurrentExpander
@@ -31,7 +32,7 @@ type ConcurrentExpander struct {
 // consumption.
 type ValidatedExpandRequest struct {
 	*v1.DispatchExpandRequest
-	Revision decimal.Decimal
+	Revision datastore.Revision
 }
 
 // Expand performs an expand request with the provided request and context.
@@ -68,19 +69,25 @@ func (ce *ConcurrentExpander) expandDirect(
 		}
 		defer it.Close()
 
-		var foundNonTerminalUsersets []*core.ObjectAndRelation
-		var foundTerminalUsersets []*core.ObjectAndRelation
+		var foundNonTerminalUsersets []*core.DirectSubject
+		var foundTerminalUsersets []*core.DirectSubject
 		for tpl := it.Next(); tpl != nil; tpl = it.Next() {
+			if it.Err() != nil {
+				resultChan <- expandResultError(NewExpansionFailureErr(it.Err()), emptyMetadata)
+				return
+			}
+
+			ds := &core.DirectSubject{
+				Subject:          tpl.Subject,
+				CaveatExpression: caveats.CaveatAsExpr(tpl.Caveat),
+			}
 			if tpl.Subject.Relation == Ellipsis {
-				foundTerminalUsersets = append(foundTerminalUsersets, tpl.Subject)
+				foundTerminalUsersets = append(foundTerminalUsersets, ds)
 			} else {
-				foundNonTerminalUsersets = append(foundNonTerminalUsersets, tpl.Subject)
+				foundNonTerminalUsersets = append(foundNonTerminalUsersets, ds)
 			}
 		}
-		if it.Err() != nil {
-			resultChan <- expandResultError(NewExpansionFailureErr(it.Err()), emptyMetadata)
-			return
-		}
+		it.Close()
 
 		// If only shallow expansion was required, or there are no non-terminal subjects found,
 		// nothing more to do.
@@ -103,14 +110,16 @@ func (ce *ConcurrentExpander) expandDirect(
 		// found terminals together.
 		var requestsToDispatch []ReduceableExpandFunc
 		for _, nonTerminalUser := range foundNonTerminalUsersets {
-			requestsToDispatch = append(requestsToDispatch, ce.dispatch(ValidatedExpandRequest{
+			toDispatch := ce.dispatch(ValidatedExpandRequest{
 				&v1.DispatchExpandRequest{
-					ResourceAndRelation: nonTerminalUser,
+					ResourceAndRelation: nonTerminalUser.Subject,
 					Metadata:            decrementDepth(req.Metadata),
 					ExpansionMode:       req.ExpansionMode,
 				},
 				req.Revision,
-			}))
+			})
+
+			requestsToDispatch = append(requestsToDispatch, decorateWithCaveatIfNecessary(toDispatch, nonTerminalUser.CaveatExpression))
 		}
 
 		result := expandAny(ctx, req.ResourceAndRelation, requestsToDispatch)
@@ -128,6 +137,29 @@ func (ce *ConcurrentExpander) expandDirect(
 			},
 			Expanded: req.ResourceAndRelation,
 		})
+		resultChan <- result
+	}
+}
+
+func decorateWithCaveatIfNecessary(toDispatch ReduceableExpandFunc, caveatExpr *core.CaveatExpression) ReduceableExpandFunc {
+	// If no caveat expression, simply return the func unmodified.
+	if caveatExpr == nil {
+		return toDispatch
+	}
+
+	// Otherwise return a wrapped function that expands the underlying func to be dispatched, and then decorates
+	// the resulting node with the caveat expression.
+	//
+	// TODO(jschorr): This will generate a lot of function closures, so we should change Expand to avoid them
+	// like we did in Check.
+	return func(ctx context.Context, resultChan chan<- ExpandResult) {
+		result := expandOne(ctx, toDispatch)
+		if result.Err != nil {
+			resultChan <- result
+			return
+		}
+
+		result.Resp.TreeNode.CaveatExpression = caveatExpr
 		resultChan <- result
 	}
 }
@@ -184,8 +216,7 @@ func (ce *ConcurrentExpander) expandComputedUserset(ctx context.Context, req Val
 	var start *core.ObjectAndRelation
 	if cu.Object == core.ComputedUserset_TUPLE_USERSET_OBJECT {
 		if tpl == nil {
-			// TODO replace this with something else, AlwaysFail?
-			panic("computed userset for tupleset without tuple")
+			return expandError(spiceerrors.MustBugf("computed userset for tupleset without tuple"))
 		}
 
 		start = tpl.Subject
@@ -238,12 +269,15 @@ func (ce *ConcurrentExpander) expandTupleToUserset(ctx context.Context, req Vali
 
 		var requestsToDispatch []ReduceableExpandFunc
 		for tpl := it.Next(); tpl != nil; tpl = it.Next() {
-			requestsToDispatch = append(requestsToDispatch, ce.expandComputedUserset(ctx, req, ttu.ComputedUserset, tpl))
+			if it.Err() != nil {
+				resultChan <- expandResultError(NewExpansionFailureErr(it.Err()), emptyMetadata)
+				return
+			}
+
+			toDispatch := ce.expandComputedUserset(ctx, req, ttu.ComputedUserset, tpl)
+			requestsToDispatch = append(requestsToDispatch, decorateWithCaveatIfNecessary(toDispatch, caveats.CaveatAsExpr(tpl.Caveat)))
 		}
-		if it.Err() != nil {
-			resultChan <- expandResultError(NewExpansionFailureErr(it.Err()), emptyMetadata)
-			return
-		}
+		it.Close()
 
 		resultChan <- expandAny(ctx, req.ResourceAndRelation, requestsToDispatch)
 	}
@@ -286,7 +320,7 @@ func expandSetOperation(
 
 	resultChans := make([]chan ExpandResult, 0, len(requests))
 	for _, req := range requests {
-		resultChan := make(chan ExpandResult)
+		resultChan := make(chan ExpandResult, 1)
 		resultChans = append(resultChans, resultChan)
 		go req(childCtx, resultChan)
 	}

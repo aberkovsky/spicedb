@@ -5,6 +5,7 @@ option go_package = "github.com/authzed/spicedb/pkg/proto/dispatch/v1";
 
 import "validate/validate.proto";
 import "core/v1/core.proto";
+import "google/protobuf/struct.proto";
 
 service DispatchService {
   rpc DispatchCheck(DispatchCheckRequest) returns (DispatchCheckResponse) {}
@@ -17,7 +18,8 @@ service DispatchService {
 message DispatchCheckRequest {
   enum DebugSetting {
     NO_DEBUG = 0;
-    ENABLE_DEBUGGING = 1;
+    ENABLE_BASIC_DEBUGGING = 1;
+    ENABLE_TRACE_DEBUGGING = 2;
   }
 
   enum ResultsSetting {
@@ -40,18 +42,21 @@ message DispatchCheckRequest {
 }
 
 message DispatchCheckResponse {
+  ResponseMeta metadata = 1;
+  map<string, ResourceCheckResult> results_by_resource_id = 2;
+}
+
+message ResourceCheckResult {
   enum Membership {
     UNKNOWN = 0;
     NOT_MEMBER = 1;
     MEMBER = 2;
+    CAVEATED_MEMBER = 3;
   }
 
-  message ResourceCheckResult {
-    Membership membership = 1;
-  }
-
-  ResponseMeta metadata = 1;
-  map<string, ResourceCheckResult> results_by_resource_id = 2;
+  Membership membership = 1;
+  core.v1.CaveatExpression expression = 2;
+  repeated string missing_expr_fields = 3;
 }
 
 message DispatchExpandRequest {
@@ -79,16 +84,25 @@ message DispatchLookupRequest {
       [ (validate.rules).message.required = true ];
   core.v1.ObjectAndRelation subject = 3
       [ (validate.rules).message.required = true ];
-  uint32 limit = 4;
-  repeated core.v1.RelationReference direct_stack = 5;
-  repeated core.v1.RelationReference ttu_stack = 6;
+  uint32 limit = 4;  
+  google.protobuf.Struct context = 5;
+}
+
+message ResolvedResource {
+  enum Permissionship {
+    UNKNOWN = 0;
+    HAS_PERMISSION = 1;
+    CONDITIONALLY_HAS_PERMISSION = 2;
+  }
+
+  string resource_id = 1;
+  Permissionship permissionship = 2;
+  repeated string missing_required_context = 3;
 }
 
 message DispatchLookupResponse {
   ResponseMeta metadata = 1;
-
-  repeated core.v1.ObjectAndRelation resolved_onrs = 2;
-  string next_page_reference = 3;
+  repeated ResolvedResource resolved_resources = 2;
 }
 
 message DispatchReachableResourcesRequest {
@@ -116,12 +130,13 @@ message ReachableResource {
     HAS_PERMISSION = 1;
   }
 
-  repeated string resource_ids = 1;
+  string resource_id = 1;
   ResultStatus result_status = 2;
+  repeated string for_subject_ids = 3;
 }
 
 message DispatchReachableResourcesResponse {
-  ReachableResource resource = 1;
+  repeated ReachableResource resources = 1;
   ResponseMeta metadata = 2;
 }
 
@@ -138,11 +153,16 @@ message DispatchLookupSubjectsRequest {
 
 message FoundSubject {
   string subject_id = 1;
-  repeated string excluded_subject_ids = 2;
+  core.v1.CaveatExpression caveat_expression = 2;
+  repeated FoundSubject excluded_subjects = 3;
+}
+
+message FoundSubjects {
+  repeated FoundSubject found_subjects = 1;
 }
 
 message DispatchLookupSubjectsResponse {
-  repeated FoundSubject found_subjects = 1;
+  map<string, FoundSubjects> found_subjects_by_resource_id = 1;
   ResponseMeta metadata = 2;
 }
 
@@ -172,10 +192,6 @@ message CheckDebugTrace {
     UNKNOWN = 0;
     RELATION = 1;
     PERMISSION = 2;
-  }
-
-  message ResourceCheckResult {
-    bool has_permission = 2;
   }
 
   DispatchCheckRequest request = 1;

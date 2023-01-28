@@ -438,6 +438,139 @@ var _ interface {
 	ErrorName() string
 } = DispatchCheckResponseValidationError{}
 
+// Validate checks the field values on ResourceCheckResult with the rules
+// defined in the proto definition for this message. If any rules are
+// violated, the first error encountered is returned, or nil if there are no violations.
+func (m *ResourceCheckResult) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on ResourceCheckResult with the rules
+// defined in the proto definition for this message. If any rules are
+// violated, the result is a list of violation errors wrapped in
+// ResourceCheckResultMultiError, or nil if none found.
+func (m *ResourceCheckResult) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *ResourceCheckResult) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	// no validation rules for Membership
+
+	if all {
+		switch v := interface{}(m.GetExpression()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, ResourceCheckResultValidationError{
+					field:  "Expression",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		case interface{ Validate() error }:
+			if err := v.Validate(); err != nil {
+				errors = append(errors, ResourceCheckResultValidationError{
+					field:  "Expression",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		}
+	} else if v, ok := interface{}(m.GetExpression()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return ResourceCheckResultValidationError{
+				field:  "Expression",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
+	}
+
+	if len(errors) > 0 {
+		return ResourceCheckResultMultiError(errors)
+	}
+
+	return nil
+}
+
+// ResourceCheckResultMultiError is an error wrapping multiple validation
+// errors returned by ResourceCheckResult.ValidateAll() if the designated
+// constraints aren't met.
+type ResourceCheckResultMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m ResourceCheckResultMultiError) Error() string {
+	var msgs []string
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m ResourceCheckResultMultiError) AllErrors() []error { return m }
+
+// ResourceCheckResultValidationError is the validation error returned by
+// ResourceCheckResult.Validate if the designated constraints aren't met.
+type ResourceCheckResultValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e ResourceCheckResultValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e ResourceCheckResultValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e ResourceCheckResultValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e ResourceCheckResultValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e ResourceCheckResultValidationError) ErrorName() string {
+	return "ResourceCheckResultValidationError"
+}
+
+// Error satisfies the builtin error interface
+func (e ResourceCheckResultValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sResourceCheckResult.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = ResourceCheckResultValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = ResourceCheckResultValidationError{}
+
 // Validate checks the field values on DispatchExpandRequest with the rules
 // defined in the proto definition for this message. If any rules are
 // violated, the first error encountered is returned, or nil if there are no violations.
@@ -926,72 +1059,33 @@ func (m *DispatchLookupRequest) validate(all bool) error {
 
 	// no validation rules for Limit
 
-	for idx, item := range m.GetDirectStack() {
-		_, _ = idx, item
-
-		if all {
-			switch v := interface{}(item).(type) {
-			case interface{ ValidateAll() error }:
-				if err := v.ValidateAll(); err != nil {
-					errors = append(errors, DispatchLookupRequestValidationError{
-						field:  fmt.Sprintf("DirectStack[%v]", idx),
-						reason: "embedded message failed validation",
-						cause:  err,
-					})
-				}
-			case interface{ Validate() error }:
-				if err := v.Validate(); err != nil {
-					errors = append(errors, DispatchLookupRequestValidationError{
-						field:  fmt.Sprintf("DirectStack[%v]", idx),
-						reason: "embedded message failed validation",
-						cause:  err,
-					})
-				}
-			}
-		} else if v, ok := interface{}(item).(interface{ Validate() error }); ok {
-			if err := v.Validate(); err != nil {
-				return DispatchLookupRequestValidationError{
-					field:  fmt.Sprintf("DirectStack[%v]", idx),
+	if all {
+		switch v := interface{}(m.GetContext()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, DispatchLookupRequestValidationError{
+					field:  "Context",
 					reason: "embedded message failed validation",
 					cause:  err,
-				}
+				})
 			}
-		}
-
-	}
-
-	for idx, item := range m.GetTtuStack() {
-		_, _ = idx, item
-
-		if all {
-			switch v := interface{}(item).(type) {
-			case interface{ ValidateAll() error }:
-				if err := v.ValidateAll(); err != nil {
-					errors = append(errors, DispatchLookupRequestValidationError{
-						field:  fmt.Sprintf("TtuStack[%v]", idx),
-						reason: "embedded message failed validation",
-						cause:  err,
-					})
-				}
-			case interface{ Validate() error }:
-				if err := v.Validate(); err != nil {
-					errors = append(errors, DispatchLookupRequestValidationError{
-						field:  fmt.Sprintf("TtuStack[%v]", idx),
-						reason: "embedded message failed validation",
-						cause:  err,
-					})
-				}
-			}
-		} else if v, ok := interface{}(item).(interface{ Validate() error }); ok {
+		case interface{ Validate() error }:
 			if err := v.Validate(); err != nil {
-				return DispatchLookupRequestValidationError{
-					field:  fmt.Sprintf("TtuStack[%v]", idx),
+				errors = append(errors, DispatchLookupRequestValidationError{
+					field:  "Context",
 					reason: "embedded message failed validation",
 					cause:  err,
-				}
+				})
 			}
 		}
-
+	} else if v, ok := interface{}(m.GetContext()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return DispatchLookupRequestValidationError{
+				field:  "Context",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
 	}
 
 	if len(errors) > 0 {
@@ -1074,6 +1168,110 @@ var _ interface {
 	ErrorName() string
 } = DispatchLookupRequestValidationError{}
 
+// Validate checks the field values on ResolvedResource with the rules defined
+// in the proto definition for this message. If any rules are violated, the
+// first error encountered is returned, or nil if there are no violations.
+func (m *ResolvedResource) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on ResolvedResource with the rules
+// defined in the proto definition for this message. If any rules are
+// violated, the result is a list of violation errors wrapped in
+// ResolvedResourceMultiError, or nil if none found.
+func (m *ResolvedResource) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *ResolvedResource) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	// no validation rules for ResourceId
+
+	// no validation rules for Permissionship
+
+	if len(errors) > 0 {
+		return ResolvedResourceMultiError(errors)
+	}
+
+	return nil
+}
+
+// ResolvedResourceMultiError is an error wrapping multiple validation errors
+// returned by ResolvedResource.ValidateAll() if the designated constraints
+// aren't met.
+type ResolvedResourceMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m ResolvedResourceMultiError) Error() string {
+	var msgs []string
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m ResolvedResourceMultiError) AllErrors() []error { return m }
+
+// ResolvedResourceValidationError is the validation error returned by
+// ResolvedResource.Validate if the designated constraints aren't met.
+type ResolvedResourceValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e ResolvedResourceValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e ResolvedResourceValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e ResolvedResourceValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e ResolvedResourceValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e ResolvedResourceValidationError) ErrorName() string { return "ResolvedResourceValidationError" }
+
+// Error satisfies the builtin error interface
+func (e ResolvedResourceValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sResolvedResource.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = ResolvedResourceValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = ResolvedResourceValidationError{}
+
 // Validate checks the field values on DispatchLookupResponse with the rules
 // defined in the proto definition for this message. If any rules are
 // violated, the first error encountered is returned, or nil if there are no violations.
@@ -1125,7 +1323,7 @@ func (m *DispatchLookupResponse) validate(all bool) error {
 		}
 	}
 
-	for idx, item := range m.GetResolvedOnrs() {
+	for idx, item := range m.GetResolvedResources() {
 		_, _ = idx, item
 
 		if all {
@@ -1133,7 +1331,7 @@ func (m *DispatchLookupResponse) validate(all bool) error {
 			case interface{ ValidateAll() error }:
 				if err := v.ValidateAll(); err != nil {
 					errors = append(errors, DispatchLookupResponseValidationError{
-						field:  fmt.Sprintf("ResolvedOnrs[%v]", idx),
+						field:  fmt.Sprintf("ResolvedResources[%v]", idx),
 						reason: "embedded message failed validation",
 						cause:  err,
 					})
@@ -1141,7 +1339,7 @@ func (m *DispatchLookupResponse) validate(all bool) error {
 			case interface{ Validate() error }:
 				if err := v.Validate(); err != nil {
 					errors = append(errors, DispatchLookupResponseValidationError{
-						field:  fmt.Sprintf("ResolvedOnrs[%v]", idx),
+						field:  fmt.Sprintf("ResolvedResources[%v]", idx),
 						reason: "embedded message failed validation",
 						cause:  err,
 					})
@@ -1150,7 +1348,7 @@ func (m *DispatchLookupResponse) validate(all bool) error {
 		} else if v, ok := interface{}(item).(interface{ Validate() error }); ok {
 			if err := v.Validate(); err != nil {
 				return DispatchLookupResponseValidationError{
-					field:  fmt.Sprintf("ResolvedOnrs[%v]", idx),
+					field:  fmt.Sprintf("ResolvedResources[%v]", idx),
 					reason: "embedded message failed validation",
 					cause:  err,
 				}
@@ -1158,8 +1356,6 @@ func (m *DispatchLookupResponse) validate(all bool) error {
 		}
 
 	}
-
-	// no validation rules for NextPageReference
 
 	if len(errors) > 0 {
 		return DispatchLookupResponseMultiError(errors)
@@ -1488,6 +1684,8 @@ func (m *ReachableResource) validate(all bool) error {
 
 	var errors []error
 
+	// no validation rules for ResourceId
+
 	// no validation rules for ResultStatus
 
 	if len(errors) > 0 {
@@ -1593,33 +1791,38 @@ func (m *DispatchReachableResourcesResponse) validate(all bool) error {
 
 	var errors []error
 
-	if all {
-		switch v := interface{}(m.GetResource()).(type) {
-		case interface{ ValidateAll() error }:
-			if err := v.ValidateAll(); err != nil {
-				errors = append(errors, DispatchReachableResourcesResponseValidationError{
-					field:  "Resource",
-					reason: "embedded message failed validation",
-					cause:  err,
-				})
+	for idx, item := range m.GetResources() {
+		_, _ = idx, item
+
+		if all {
+			switch v := interface{}(item).(type) {
+			case interface{ ValidateAll() error }:
+				if err := v.ValidateAll(); err != nil {
+					errors = append(errors, DispatchReachableResourcesResponseValidationError{
+						field:  fmt.Sprintf("Resources[%v]", idx),
+						reason: "embedded message failed validation",
+						cause:  err,
+					})
+				}
+			case interface{ Validate() error }:
+				if err := v.Validate(); err != nil {
+					errors = append(errors, DispatchReachableResourcesResponseValidationError{
+						field:  fmt.Sprintf("Resources[%v]", idx),
+						reason: "embedded message failed validation",
+						cause:  err,
+					})
+				}
 			}
-		case interface{ Validate() error }:
+		} else if v, ok := interface{}(item).(interface{ Validate() error }); ok {
 			if err := v.Validate(); err != nil {
-				errors = append(errors, DispatchReachableResourcesResponseValidationError{
-					field:  "Resource",
+				return DispatchReachableResourcesResponseValidationError{
+					field:  fmt.Sprintf("Resources[%v]", idx),
 					reason: "embedded message failed validation",
 					cause:  err,
-				})
+				}
 			}
 		}
-	} else if v, ok := interface{}(m.GetResource()).(interface{ Validate() error }); ok {
-		if err := v.Validate(); err != nil {
-			return DispatchReachableResourcesResponseValidationError{
-				field:  "Resource",
-				reason: "embedded message failed validation",
-				cause:  err,
-			}
-		}
+
 	}
 
 	if all {
@@ -1980,6 +2183,69 @@ func (m *FoundSubject) validate(all bool) error {
 
 	// no validation rules for SubjectId
 
+	if all {
+		switch v := interface{}(m.GetCaveatExpression()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, FoundSubjectValidationError{
+					field:  "CaveatExpression",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		case interface{ Validate() error }:
+			if err := v.Validate(); err != nil {
+				errors = append(errors, FoundSubjectValidationError{
+					field:  "CaveatExpression",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		}
+	} else if v, ok := interface{}(m.GetCaveatExpression()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return FoundSubjectValidationError{
+				field:  "CaveatExpression",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
+	}
+
+	for idx, item := range m.GetExcludedSubjects() {
+		_, _ = idx, item
+
+		if all {
+			switch v := interface{}(item).(type) {
+			case interface{ ValidateAll() error }:
+				if err := v.ValidateAll(); err != nil {
+					errors = append(errors, FoundSubjectValidationError{
+						field:  fmt.Sprintf("ExcludedSubjects[%v]", idx),
+						reason: "embedded message failed validation",
+						cause:  err,
+					})
+				}
+			case interface{ Validate() error }:
+				if err := v.Validate(); err != nil {
+					errors = append(errors, FoundSubjectValidationError{
+						field:  fmt.Sprintf("ExcludedSubjects[%v]", idx),
+						reason: "embedded message failed validation",
+						cause:  err,
+					})
+				}
+			}
+		} else if v, ok := interface{}(item).(interface{ Validate() error }); ok {
+			if err := v.Validate(); err != nil {
+				return FoundSubjectValidationError{
+					field:  fmt.Sprintf("ExcludedSubjects[%v]", idx),
+					reason: "embedded message failed validation",
+					cause:  err,
+				}
+			}
+		}
+
+	}
+
 	if len(errors) > 0 {
 		return FoundSubjectMultiError(errors)
 	}
@@ -2057,6 +2323,140 @@ var _ interface {
 	ErrorName() string
 } = FoundSubjectValidationError{}
 
+// Validate checks the field values on FoundSubjects with the rules defined in
+// the proto definition for this message. If any rules are violated, the first
+// error encountered is returned, or nil if there are no violations.
+func (m *FoundSubjects) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on FoundSubjects with the rules defined
+// in the proto definition for this message. If any rules are violated, the
+// result is a list of violation errors wrapped in FoundSubjectsMultiError, or
+// nil if none found.
+func (m *FoundSubjects) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *FoundSubjects) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	for idx, item := range m.GetFoundSubjects() {
+		_, _ = idx, item
+
+		if all {
+			switch v := interface{}(item).(type) {
+			case interface{ ValidateAll() error }:
+				if err := v.ValidateAll(); err != nil {
+					errors = append(errors, FoundSubjectsValidationError{
+						field:  fmt.Sprintf("FoundSubjects[%v]", idx),
+						reason: "embedded message failed validation",
+						cause:  err,
+					})
+				}
+			case interface{ Validate() error }:
+				if err := v.Validate(); err != nil {
+					errors = append(errors, FoundSubjectsValidationError{
+						field:  fmt.Sprintf("FoundSubjects[%v]", idx),
+						reason: "embedded message failed validation",
+						cause:  err,
+					})
+				}
+			}
+		} else if v, ok := interface{}(item).(interface{ Validate() error }); ok {
+			if err := v.Validate(); err != nil {
+				return FoundSubjectsValidationError{
+					field:  fmt.Sprintf("FoundSubjects[%v]", idx),
+					reason: "embedded message failed validation",
+					cause:  err,
+				}
+			}
+		}
+
+	}
+
+	if len(errors) > 0 {
+		return FoundSubjectsMultiError(errors)
+	}
+
+	return nil
+}
+
+// FoundSubjectsMultiError is an error wrapping multiple validation errors
+// returned by FoundSubjects.ValidateAll() if the designated constraints
+// aren't met.
+type FoundSubjectsMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m FoundSubjectsMultiError) Error() string {
+	var msgs []string
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m FoundSubjectsMultiError) AllErrors() []error { return m }
+
+// FoundSubjectsValidationError is the validation error returned by
+// FoundSubjects.Validate if the designated constraints aren't met.
+type FoundSubjectsValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e FoundSubjectsValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e FoundSubjectsValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e FoundSubjectsValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e FoundSubjectsValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e FoundSubjectsValidationError) ErrorName() string { return "FoundSubjectsValidationError" }
+
+// Error satisfies the builtin error interface
+func (e FoundSubjectsValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sFoundSubjects.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = FoundSubjectsValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = FoundSubjectsValidationError{}
+
 // Validate checks the field values on DispatchLookupSubjectsResponse with the
 // rules defined in the proto definition for this message. If any rules are
 // violated, the first error encountered is returned, or nil if there are no violations.
@@ -2079,38 +2479,50 @@ func (m *DispatchLookupSubjectsResponse) validate(all bool) error {
 
 	var errors []error
 
-	for idx, item := range m.GetFoundSubjects() {
-		_, _ = idx, item
-
-		if all {
-			switch v := interface{}(item).(type) {
-			case interface{ ValidateAll() error }:
-				if err := v.ValidateAll(); err != nil {
-					errors = append(errors, DispatchLookupSubjectsResponseValidationError{
-						field:  fmt.Sprintf("FoundSubjects[%v]", idx),
-						reason: "embedded message failed validation",
-						cause:  err,
-					})
-				}
-			case interface{ Validate() error }:
-				if err := v.Validate(); err != nil {
-					errors = append(errors, DispatchLookupSubjectsResponseValidationError{
-						field:  fmt.Sprintf("FoundSubjects[%v]", idx),
-						reason: "embedded message failed validation",
-						cause:  err,
-					})
-				}
-			}
-		} else if v, ok := interface{}(item).(interface{ Validate() error }); ok {
-			if err := v.Validate(); err != nil {
-				return DispatchLookupSubjectsResponseValidationError{
-					field:  fmt.Sprintf("FoundSubjects[%v]", idx),
-					reason: "embedded message failed validation",
-					cause:  err,
-				}
-			}
+	{
+		sorted_keys := make([]string, len(m.GetFoundSubjectsByResourceId()))
+		i := 0
+		for key := range m.GetFoundSubjectsByResourceId() {
+			sorted_keys[i] = key
+			i++
 		}
+		sort.Slice(sorted_keys, func(i, j int) bool { return sorted_keys[i] < sorted_keys[j] })
+		for _, key := range sorted_keys {
+			val := m.GetFoundSubjectsByResourceId()[key]
+			_ = val
 
+			// no validation rules for FoundSubjectsByResourceId[key]
+
+			if all {
+				switch v := interface{}(val).(type) {
+				case interface{ ValidateAll() error }:
+					if err := v.ValidateAll(); err != nil {
+						errors = append(errors, DispatchLookupSubjectsResponseValidationError{
+							field:  fmt.Sprintf("FoundSubjectsByResourceId[%v]", key),
+							reason: "embedded message failed validation",
+							cause:  err,
+						})
+					}
+				case interface{ Validate() error }:
+					if err := v.Validate(); err != nil {
+						errors = append(errors, DispatchLookupSubjectsResponseValidationError{
+							field:  fmt.Sprintf("FoundSubjectsByResourceId[%v]", key),
+							reason: "embedded message failed validation",
+							cause:  err,
+						})
+					}
+				}
+			} else if v, ok := interface{}(val).(interface{ Validate() error }); ok {
+				if err := v.Validate(); err != nil {
+					return DispatchLookupSubjectsResponseValidationError{
+						field:  fmt.Sprintf("FoundSubjectsByResourceId[%v]", key),
+						reason: "embedded message failed validation",
+						cause:  err,
+					}
+				}
+			}
+
+		}
 	}
 
 	if all {
@@ -2821,218 +3233,3 @@ var _ interface {
 	Cause() error
 	ErrorName() string
 } = CheckDebugTraceValidationError{}
-
-// Validate checks the field values on
-// DispatchCheckResponse_ResourceCheckResult with the rules defined in the
-// proto definition for this message. If any rules are violated, the first
-// error encountered is returned, or nil if there are no violations.
-func (m *DispatchCheckResponse_ResourceCheckResult) Validate() error {
-	return m.validate(false)
-}
-
-// ValidateAll checks the field values on
-// DispatchCheckResponse_ResourceCheckResult with the rules defined in the
-// proto definition for this message. If any rules are violated, the result is
-// a list of violation errors wrapped in
-// DispatchCheckResponse_ResourceCheckResultMultiError, or nil if none found.
-func (m *DispatchCheckResponse_ResourceCheckResult) ValidateAll() error {
-	return m.validate(true)
-}
-
-func (m *DispatchCheckResponse_ResourceCheckResult) validate(all bool) error {
-	if m == nil {
-		return nil
-	}
-
-	var errors []error
-
-	// no validation rules for Membership
-
-	if len(errors) > 0 {
-		return DispatchCheckResponse_ResourceCheckResultMultiError(errors)
-	}
-
-	return nil
-}
-
-// DispatchCheckResponse_ResourceCheckResultMultiError is an error wrapping
-// multiple validation errors returned by
-// DispatchCheckResponse_ResourceCheckResult.ValidateAll() if the designated
-// constraints aren't met.
-type DispatchCheckResponse_ResourceCheckResultMultiError []error
-
-// Error returns a concatenation of all the error messages it wraps.
-func (m DispatchCheckResponse_ResourceCheckResultMultiError) Error() string {
-	var msgs []string
-	for _, err := range m {
-		msgs = append(msgs, err.Error())
-	}
-	return strings.Join(msgs, "; ")
-}
-
-// AllErrors returns a list of validation violation errors.
-func (m DispatchCheckResponse_ResourceCheckResultMultiError) AllErrors() []error { return m }
-
-// DispatchCheckResponse_ResourceCheckResultValidationError is the validation
-// error returned by DispatchCheckResponse_ResourceCheckResult.Validate if the
-// designated constraints aren't met.
-type DispatchCheckResponse_ResourceCheckResultValidationError struct {
-	field  string
-	reason string
-	cause  error
-	key    bool
-}
-
-// Field function returns field value.
-func (e DispatchCheckResponse_ResourceCheckResultValidationError) Field() string { return e.field }
-
-// Reason function returns reason value.
-func (e DispatchCheckResponse_ResourceCheckResultValidationError) Reason() string { return e.reason }
-
-// Cause function returns cause value.
-func (e DispatchCheckResponse_ResourceCheckResultValidationError) Cause() error { return e.cause }
-
-// Key function returns key value.
-func (e DispatchCheckResponse_ResourceCheckResultValidationError) Key() bool { return e.key }
-
-// ErrorName returns error name.
-func (e DispatchCheckResponse_ResourceCheckResultValidationError) ErrorName() string {
-	return "DispatchCheckResponse_ResourceCheckResultValidationError"
-}
-
-// Error satisfies the builtin error interface
-func (e DispatchCheckResponse_ResourceCheckResultValidationError) Error() string {
-	cause := ""
-	if e.cause != nil {
-		cause = fmt.Sprintf(" | caused by: %v", e.cause)
-	}
-
-	key := ""
-	if e.key {
-		key = "key for "
-	}
-
-	return fmt.Sprintf(
-		"invalid %sDispatchCheckResponse_ResourceCheckResult.%s: %s%s",
-		key,
-		e.field,
-		e.reason,
-		cause)
-}
-
-var _ error = DispatchCheckResponse_ResourceCheckResultValidationError{}
-
-var _ interface {
-	Field() string
-	Reason() string
-	Key() bool
-	Cause() error
-	ErrorName() string
-} = DispatchCheckResponse_ResourceCheckResultValidationError{}
-
-// Validate checks the field values on CheckDebugTrace_ResourceCheckResult with
-// the rules defined in the proto definition for this message. If any rules
-// are violated, the first error encountered is returned, or nil if there are
-// no violations.
-func (m *CheckDebugTrace_ResourceCheckResult) Validate() error {
-	return m.validate(false)
-}
-
-// ValidateAll checks the field values on CheckDebugTrace_ResourceCheckResult
-// with the rules defined in the proto definition for this message. If any
-// rules are violated, the result is a list of violation errors wrapped in
-// CheckDebugTrace_ResourceCheckResultMultiError, or nil if none found.
-func (m *CheckDebugTrace_ResourceCheckResult) ValidateAll() error {
-	return m.validate(true)
-}
-
-func (m *CheckDebugTrace_ResourceCheckResult) validate(all bool) error {
-	if m == nil {
-		return nil
-	}
-
-	var errors []error
-
-	// no validation rules for HasPermission
-
-	if len(errors) > 0 {
-		return CheckDebugTrace_ResourceCheckResultMultiError(errors)
-	}
-
-	return nil
-}
-
-// CheckDebugTrace_ResourceCheckResultMultiError is an error wrapping multiple
-// validation errors returned by
-// CheckDebugTrace_ResourceCheckResult.ValidateAll() if the designated
-// constraints aren't met.
-type CheckDebugTrace_ResourceCheckResultMultiError []error
-
-// Error returns a concatenation of all the error messages it wraps.
-func (m CheckDebugTrace_ResourceCheckResultMultiError) Error() string {
-	var msgs []string
-	for _, err := range m {
-		msgs = append(msgs, err.Error())
-	}
-	return strings.Join(msgs, "; ")
-}
-
-// AllErrors returns a list of validation violation errors.
-func (m CheckDebugTrace_ResourceCheckResultMultiError) AllErrors() []error { return m }
-
-// CheckDebugTrace_ResourceCheckResultValidationError is the validation error
-// returned by CheckDebugTrace_ResourceCheckResult.Validate if the designated
-// constraints aren't met.
-type CheckDebugTrace_ResourceCheckResultValidationError struct {
-	field  string
-	reason string
-	cause  error
-	key    bool
-}
-
-// Field function returns field value.
-func (e CheckDebugTrace_ResourceCheckResultValidationError) Field() string { return e.field }
-
-// Reason function returns reason value.
-func (e CheckDebugTrace_ResourceCheckResultValidationError) Reason() string { return e.reason }
-
-// Cause function returns cause value.
-func (e CheckDebugTrace_ResourceCheckResultValidationError) Cause() error { return e.cause }
-
-// Key function returns key value.
-func (e CheckDebugTrace_ResourceCheckResultValidationError) Key() bool { return e.key }
-
-// ErrorName returns error name.
-func (e CheckDebugTrace_ResourceCheckResultValidationError) ErrorName() string {
-	return "CheckDebugTrace_ResourceCheckResultValidationError"
-}
-
-// Error satisfies the builtin error interface
-func (e CheckDebugTrace_ResourceCheckResultValidationError) Error() string {
-	cause := ""
-	if e.cause != nil {
-		cause = fmt.Sprintf(" | caused by: %v", e.cause)
-	}
-
-	key := ""
-	if e.key {
-		key = "key for "
-	}
-
-	return fmt.Sprintf(
-		"invalid %sCheckDebugTrace_ResourceCheckResult.%s: %s%s",
-		key,
-		e.field,
-		e.reason,
-		cause)
-}
-
-var _ error = CheckDebugTrace_ResourceCheckResultValidationError{}
-
-var _ interface {
-	Field() string
-	Reason() string
-	Key() bool
-	Cause() error
-	ErrorName() string
-} = CheckDebugTrace_ResourceCheckResultValidationError{}

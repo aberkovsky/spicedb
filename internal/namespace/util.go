@@ -3,7 +3,7 @@ package namespace
 import (
 	"context"
 
-	"github.com/authzed/spicedb/internal/util"
+	"github.com/authzed/spicedb/pkg/util"
 
 	"github.com/authzed/spicedb/pkg/datastore"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
@@ -77,7 +77,7 @@ func ReadNamespaceAndTypes(
 		return nil, nil, err
 	}
 
-	ts, terr := BuildNamespaceTypeSystemForDatastore(nsDef, ds)
+	ts, terr := NewNamespaceTypeSystem(nsDef, ResolverForDatastoreReader(ds))
 	return nsDef, ts, terr
 }
 

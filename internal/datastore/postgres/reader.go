@@ -5,15 +5,12 @@ import (
 	"errors"
 	"fmt"
 
-	pgxcommon "github.com/authzed/spicedb/internal/datastore/postgres/common"
-
 	sq "github.com/Masterminds/squirrel"
 	"github.com/jackc/pgx/v4"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 
 	"github.com/authzed/spicedb/internal/datastore/common"
 	"github.com/authzed/spicedb/internal/datastore/options"
+	pgxcommon "github.com/authzed/spicedb/internal/datastore/postgres/common"
 	"github.com/authzed/spicedb/pkg/datastore"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 )
@@ -34,6 +31,8 @@ var (
 		colUsersetNamespace,
 		colUsersetObjectID,
 		colUsersetRelation,
+		colCaveatContextName,
+		colCaveatContext,
 	).From(tableTuple)
 
 	schema = common.SchemaInformation{
@@ -43,9 +42,10 @@ var (
 		ColUsersetNamespace: colUsersetNamespace,
 		ColUsersetObjectID:  colUsersetObjectID,
 		ColUsersetRelation:  colUsersetRelation,
+		ColCaveatName:       colCaveatContextName,
 	}
 
-	readNamespace = psql.Select(colConfig, colCreatedTxn).From(tableNamespace)
+	readNamespace = psql.Select(colConfig, colCreatedXid).From(tableNamespace)
 )
 
 const (
@@ -58,7 +58,11 @@ func (r *pgReader) QueryRelationships(
 	filter datastore.RelationshipsFilter,
 	opts ...options.QueryOptionsOption,
 ) (iter datastore.RelationshipIterator, err error) {
-	qBuilder := common.NewSchemaQueryFilterer(schema, r.filterer(queryTuples)).FilterWithRelationshipsFilter(filter)
+	qBuilder, err := common.NewSchemaQueryFilterer(schema, r.filterer(queryTuples)).FilterWithRelationshipsFilter(filter)
+	if err != nil {
+		return nil, err
+	}
+
 	return r.querySplitter.SplitAndExecuteQuery(ctx, qBuilder, opts...)
 }
 
@@ -67,8 +71,11 @@ func (r *pgReader) ReverseQueryRelationships(
 	subjectsFilter datastore.SubjectsFilter,
 	opts ...options.ReverseQueryOptionsOption,
 ) (iter datastore.RelationshipIterator, err error) {
-	qBuilder := common.NewSchemaQueryFilterer(schema, r.filterer(queryTuples)).
-		FilterWithSubjectsFilter(subjectsFilter)
+	qBuilder, err := common.NewSchemaQueryFilterer(schema, r.filterer(queryTuples)).
+		FilterWithSubjectsSelectors(subjectsFilter.AsSelector())
+	if err != nil {
+		return nil, err
+	}
 
 	queryOpts := options.NewReverseQueryOptionsWithOptions(opts...)
 
@@ -85,18 +92,13 @@ func (r *pgReader) ReverseQueryRelationships(
 }
 
 func (r *pgReader) ReadNamespace(ctx context.Context, nsName string) (*core.NamespaceDefinition, datastore.Revision, error) {
-	ctx, span := tracer.Start(ctx, "ReadNamespace", trace.WithAttributes(
-		attribute.String("name", nsName),
-	))
-	defer span.End()
-
 	tx, txCleanup, err := r.txSource(ctx)
 	if err != nil {
 		return nil, datastore.NoRevision, fmt.Errorf(errUnableToReadConfig, err)
 	}
 	defer txCleanup(ctx)
 
-	loaded, version, err := loadNamespace(ctx, nsName, tx, r.filterer(readNamespace))
+	loaded, version, err := r.loadNamespace(ctx, nsName, tx, r.filterer)
 	switch {
 	case errors.As(err, &datastore.ErrNamespaceNotFound{}):
 		return nil, datastore.NoRevision, err
@@ -107,56 +109,43 @@ func (r *pgReader) ReadNamespace(ctx context.Context, nsName string) (*core.Name
 	}
 }
 
-func loadNamespace(ctx context.Context, namespace string, tx pgx.Tx, baseQuery sq.SelectBuilder) (*core.NamespaceDefinition, datastore.Revision, error) {
-	ctx, span := tracer.Start(datastore.SeparateContextWithTracing(ctx), "loadNamespace")
+func (r *pgReader) loadNamespace(ctx context.Context, namespace string, tx pgx.Tx, filterer queryFilterer) (*core.NamespaceDefinition, postgresRevision, error) {
+	ctx, span := tracer.Start(ctx, "loadNamespace")
 	defer span.End()
 
-	sql, args, err := baseQuery.Where(sq.Eq{colNamespace: namespace}).ToSql()
+	defs, err := loadAllNamespaces(ctx, tx, func(original sq.SelectBuilder) sq.SelectBuilder {
+		return filterer(original).Where(sq.Eq{colNamespace: namespace})
+	})
 	if err != nil {
-		return nil, datastore.NoRevision, err
+		return nil, postgresRevision{}, err
 	}
 
-	var config []byte
-	var version datastore.Revision
-	err = tx.QueryRow(ctx, sql, args...).Scan(&config, &version)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			err = datastore.NewNamespaceNotFoundErr(namespace)
-		}
-		return nil, datastore.NoRevision, err
+	if len(defs) < 1 {
+		return nil, postgresRevision{}, datastore.NewNamespaceNotFoundErr(namespace)
 	}
 
-	loaded := &core.NamespaceDefinition{}
-	if err := loaded.UnmarshalVT(config); err != nil {
-		return nil, datastore.NoRevision, err
-	}
-
-	return loaded, version, nil
+	return defs[0].nsDef, defs[0].revision, nil
 }
 
 func (r *pgReader) ListNamespaces(ctx context.Context) ([]*core.NamespaceDefinition, error) {
-	ctx = datastore.SeparateContextWithTracing(ctx)
-
 	tx, txCleanup, err := r.txSource(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer txCleanup(ctx)
 
-	nsDefs, err := loadAllNamespaces(ctx, tx, r.filterer(readNamespace))
+	nsDefsWithRevisions, err := loadAllNamespaces(ctx, tx, r.filterer)
 	if err != nil {
 		return nil, fmt.Errorf(errUnableToListNamespaces, err)
 	}
 
-	return nsDefs, err
+	return stripRevisions(nsDefsWithRevisions), err
 }
 
 func (r *pgReader) LookupNamespaces(ctx context.Context, nsNames []string) ([]*core.NamespaceDefinition, error) {
 	if len(nsNames) == 0 {
 		return nil, nil
 	}
-
-	ctx = datastore.SeparateContextWithTracing(ctx)
 
 	tx, txCleanup, err := r.txSource(ctx)
 	if err != nil {
@@ -169,16 +158,35 @@ func (r *pgReader) LookupNamespaces(ctx context.Context, nsNames []string) ([]*c
 		clause = append(clause, sq.Eq{colNamespace: nsName})
 	}
 
-	nsDefs, err := loadAllNamespaces(ctx, tx, r.filterer(readNamespace).Where(clause))
+	nsDefsWithRevisions, err := loadAllNamespaces(ctx, tx, func(original sq.SelectBuilder) sq.SelectBuilder {
+		return r.filterer(original).Where(clause)
+	})
 	if err != nil {
 		return nil, fmt.Errorf(errUnableToListNamespaces, err)
 	}
 
-	return nsDefs, err
+	return stripRevisions(nsDefsWithRevisions), err
 }
 
-func loadAllNamespaces(ctx context.Context, tx pgx.Tx, query sq.SelectBuilder) ([]*core.NamespaceDefinition, error) {
-	sql, args, err := query.ToSql()
+func stripRevisions(defsWithRevisions []nsAndVersion) []*core.NamespaceDefinition {
+	nsDefs := make([]*core.NamespaceDefinition, 0, len(defsWithRevisions))
+	for _, defWithRevision := range defsWithRevisions {
+		nsDefs = append(nsDefs, defWithRevision.nsDef)
+	}
+	return nsDefs
+}
+
+type nsAndVersion struct {
+	nsDef    *core.NamespaceDefinition
+	revision postgresRevision
+}
+
+func loadAllNamespaces(
+	ctx context.Context,
+	tx pgx.Tx,
+	filterer queryFilterer,
+) ([]nsAndVersion, error) {
+	sql, args, err := filterer(readNamespace).ToSql()
 	if err != nil {
 		return nil, err
 	}
@@ -189,10 +197,11 @@ func loadAllNamespaces(ctx context.Context, tx pgx.Tx, query sq.SelectBuilder) (
 	}
 	defer rows.Close()
 
-	var nsDefs []*core.NamespaceDefinition
+	var nsDefs []nsAndVersion
 	for rows.Next() {
 		var config []byte
-		var version datastore.Revision
+		var version xid8
+
 		if err := rows.Scan(&config, &version); err != nil {
 			return nil, err
 		}
@@ -202,7 +211,9 @@ func loadAllNamespaces(ctx context.Context, tx pgx.Tx, query sq.SelectBuilder) (
 			return nil, fmt.Errorf(errUnableToReadConfig, err)
 		}
 
-		nsDefs = append(nsDefs, loaded)
+		revision := postgresRevision{version, noXmin}
+
+		nsDefs = append(nsDefs, nsAndVersion{loaded, revision})
 	}
 	if rows.Err() != nil {
 		return nil, rows.Err()

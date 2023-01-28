@@ -7,11 +7,11 @@
 [![Discord Server](https://img.shields.io/discord/844600078504951838?color=7289da&logo=discord "Discord Server")](https://discord.gg/jTysUaxXzM)
 [![Twitter](https://img.shields.io/twitter/follow/authzed?color=%23179CF0&logo=twitter&style=flat-square&label=@authzed "@authzed on Twitter")](https://twitter.com/authzed)
 
-SpiceDB is an open source database system for managing security-critical application permissions inspired by Google's [Zanzibar] paper.
+SpiceDB is an open source, Google [Zanzibar]-inspired, database system for creating and managing security-critical application permissions.
 
-Developers create a schema that models their permissions requirements and use a [client library] to apply the schema to the database, insert data into the database, and query the data to efficiently check permissions in their applications.
+Developers create a schema that models their permissions requirements and use any of the official or community maintained [client libraries] to apply the schema to the database, insert data into the database, and query the data to efficiently check permissions in their applications.
 
-[client library]: https://github.com/orgs/authzed/repositories?q=client+library
+[client libraries]: https://github.com/authzed/awesome-spicedb
 
 Features that distinguish SpiceDB from other systems include:
 
@@ -44,11 +44,14 @@ Have questions? Join our [Discord].
 
 Looking to contribute? See [CONTRIBUTING.md].
 
+Want to learn more about Zanzibar? Read the [annotated paper] with our commentary.
+
 You can find issues by priority: [Urgent], [High], [Medium], [Low], [Maybe].
 There are also [good first issues].
 
 [Discord]: https://authzed.com/discord
 [CONTRIBUTING.md]: https://github.com/authzed/spicedb/blob/main/CONTRIBUTING.md
+[annotated paper]: https://zanzibar.tech
 [Urgent]: https://github.com/authzed/spicedb/labels/priority%2F0%20urgent
 [High]: https://github.com/authzed/spicedb/labels/priority%2F1%20high
 [Medium]: https://github.com/authzed/spicedb/labels/priority%2F2%20medium
@@ -93,7 +96,7 @@ This has strategy has become an industry best-practice and is being used to grea
 [homebrew]: https://docs.authzed.com/spicedb/installing#brew
 [docker]: https://docs.authzed.com/spicedb/installing#docker
 [examples]: https://github.com/authzed/examples
-[Docker Compose]: https://github.com/authzed/examples/tree/main/docker-compose
+[Docker Compose]: https://github.com/authzed/examples/tree/main/datastores
 [Kubernetes]: https://github.com/authzed/examples/tree/main/kubernetes
 
 ### Developing your own schema

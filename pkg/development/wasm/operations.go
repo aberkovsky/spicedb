@@ -4,129 +4,137 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
-	"syscall/js"
-
-	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/authzed/spicedb/pkg/development"
+	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	devinterface "github.com/authzed/spicedb/pkg/proto/developer/v1"
 	v1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
 	"github.com/authzed/spicedb/pkg/schemadsl/generator"
+	"github.com/authzed/spicedb/pkg/tuple"
 )
 
-func runOperation(devContext *development.DevContext, op js.Value) error {
-	operation := op.Get("operation").String()
-	parameters := op.Get("parameters").String()
-	callback := op.Get("callback")
-
-	switch operation {
-	case "formatSchema":
-		formatted := ""
-		for _, nsDef := range devContext.Namespaces {
-			source, _ := generator.GenerateSource(nsDef)
-			formatted += source
-			formatted += "\n\n"
+func runOperation(devContext *development.DevContext, operation *devinterface.Operation) (*devinterface.OperationResult, error) {
+	switch {
+	case operation.FormatSchemaParameters != nil:
+		formatted, _, err := generator.GenerateSchema(devContext.CompiledSchema.OrderedDefinitions)
+		if err != nil {
+			return nil, err
 		}
 
 		trimmed := strings.TrimSpace(formatted)
-		callback.Invoke(trimmed)
+		return &devinterface.OperationResult{
+			FormatSchemaResult: &devinterface.FormatSchemaResult{
+				FormattedSchema: trimmed,
+			},
+		}, nil
 
-	case "check":
-		params := &devinterface.CheckOperationParameters{}
-		err := protojson.Unmarshal([]byte(parameters), params)
-		if err != nil {
-			return err
+	case operation.CheckParameters != nil:
+		var caveatContext map[string]any
+		if operation.CheckParameters.CaveatContext != nil {
+			caveatContext = operation.CheckParameters.CaveatContext.AsMap()
 		}
 
-		result, err := development.RunCheck(devContext, params.Resource, params.Subject)
+		cr, err := development.RunCheck(
+			devContext,
+			operation.CheckParameters.Resource,
+			operation.CheckParameters.Subject,
+			caveatContext,
+		)
 		if err != nil {
-			callback.Invoke(nil, err.Error())
-		} else {
-			callback.Invoke(result == v1.DispatchCheckResponse_MEMBER, nil)
+			devErr, wireErr := development.DistinguishGraphError(
+				devContext,
+				err,
+				devinterface.DeveloperError_CHECK_WATCH,
+				0, 0,
+				tuple.MustString(&core.RelationTuple{
+					ResourceAndRelation: operation.CheckParameters.Resource,
+					Subject:             operation.CheckParameters.Subject,
+				}),
+			)
+			if wireErr != nil {
+				return nil, wireErr
+			}
+
+			return &devinterface.OperationResult{
+				CheckResult: &devinterface.CheckOperationsResult{
+					CheckError: devErr,
+				},
+			}, nil
 		}
 
-	case "runAssertions":
-		params := &devinterface.RunAssertionsParameters{}
-		err := protojson.Unmarshal([]byte(parameters), params)
-		if err != nil {
-			return err
+		membership := devinterface.CheckOperationsResult_NOT_MEMBER
+		if cr.Permissionship == v1.ResourceCheckResult_MEMBER {
+			membership = devinterface.CheckOperationsResult_MEMBER
+		} else if cr.Permissionship == v1.ResourceCheckResult_CAVEATED_MEMBER {
+			membership = devinterface.CheckOperationsResult_CAVEATED_MEMBER
 		}
 
-		assertions, devErr := development.ParseAssertionsYAML(params.AssertionsYaml)
+		return &devinterface.OperationResult{
+			CheckResult: &devinterface.CheckOperationsResult{
+				Membership:               membership,
+				DebugInformation:         cr.DispatchDebugInfo,
+				ResolvedDebugInformation: cr.V1DebugInfo,
+				PartialCaveatInfo: &devinterface.PartialCaveatInfo{
+					MissingRequiredContext: cr.MissingCaveatFields,
+				},
+			},
+		}, nil
+
+	case operation.AssertionsParameters != nil:
+		assertions, devErr := development.ParseAssertionsYAML(operation.AssertionsParameters.AssertionsYaml)
 		if devErr != nil {
-			encoded, err := encodeDevError(devErr)
-			callback.Invoke(encoded, err)
-			return nil
+			return &devinterface.OperationResult{
+				AssertionsResult: &devinterface.RunAssertionsResult{
+					InputError: devErr,
+				},
+			}, nil
 		}
 
-		devErrs, err := development.RunAllAssertions(devContext, assertions)
+		validationErrors, err := development.RunAllAssertions(devContext, assertions)
 		if err != nil {
-			callback.Invoke(nil, err.Error())
-			return nil
-		} else if devErrs != nil {
-			encoded, err := encodeDevErrors(devErrs)
-			callback.Invoke(encoded, err)
-			return nil
+			return nil, err
 		}
 
-		callback.Invoke(nil, nil)
+		return &devinterface.OperationResult{
+			AssertionsResult: &devinterface.RunAssertionsResult{
+				ValidationErrors: validationErrors,
+			},
+		}, nil
 
-	case "runValidation":
-		params := &devinterface.RunValidationParameters{}
-		err := protojson.Unmarshal([]byte(parameters), params)
-		if err != nil {
-			return err
-		}
-
-		validation, devErr := development.ParseExpectedRelationsYAML(params.ValidationYaml)
+	case operation.ValidationParameters != nil:
+		validation, devErr := development.ParseExpectedRelationsYAML(operation.ValidationParameters.ValidationYaml)
 		if devErr != nil {
-			encoded, err := encodeDevError(devErr)
-			callback.Invoke(nil, encoded, err)
-			return nil
+			return &devinterface.OperationResult{
+				ValidationResult: &devinterface.RunValidationResult{
+					InputError: devErr,
+				},
+			}, nil
 		}
 
-		membershipSet, devErrs, err := development.RunValidation(devContext, validation)
+		membershipSet, validationErrors, err := development.RunValidation(devContext, validation)
+		if err != nil {
+			return nil, err
+		}
 
 		updatedValidationYaml := ""
 		if membershipSet != nil {
 			generatedValidationYaml, gerr := development.GenerateValidation(membershipSet)
 			if gerr != nil {
-				return gerr
+				return nil, gerr
 			}
 			updatedValidationYaml = generatedValidationYaml
 		}
 
-		if err != nil {
-			callback.Invoke(updatedValidationYaml, nil, err.Error())
-			return nil
-		} else if devErrs != nil {
-			encoded, err := encodeDevErrors(devErrs)
-			callback.Invoke(updatedValidationYaml, encoded, err)
-			return nil
-		}
+		return &devinterface.OperationResult{
+			ValidationResult: &devinterface.RunValidationResult{
+				UpdatedValidationYaml: updatedValidationYaml,
+				ValidationErrors:      validationErrors,
+			},
+		}, nil
 
-		callback.Invoke(updatedValidationYaml, nil, nil)
 	default:
-		return fmt.Errorf("unknown operation: `%v`", operation)
+		return nil, fmt.Errorf("unknown operation")
 	}
-
-	return nil
-}
-
-func encodeDevErrors(devErrs *development.DeveloperErrors) (interface{}, error) {
-	marshalled, err := json.Marshal(devErrs)
-	if err != nil {
-		return nil, err
-	}
-
-	return string(marshalled), nil
-}
-
-func encodeDevError(devErr *devinterface.DeveloperError) (interface{}, error) {
-	return encodeDevErrors(&development.DeveloperErrors{
-		ValidationErrors: []*devinterface.DeveloperError{devErr},
-	})
 }

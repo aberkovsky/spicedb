@@ -8,6 +8,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"google.golang.org/grpc/backoff"
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/stretchr/testify/require"
@@ -17,7 +20,6 @@ import (
 
 	combineddispatch "github.com/authzed/spicedb/internal/dispatch/combined"
 	hashbalancer "github.com/authzed/spicedb/pkg/balancer"
-	"github.com/authzed/spicedb/pkg/cache"
 	"github.com/authzed/spicedb/pkg/cmd/server"
 	"github.com/authzed/spicedb/pkg/cmd/util"
 	"github.com/authzed/spicedb/pkg/datastore"
@@ -180,15 +182,8 @@ func TestClusterWithDispatchAndCacheConfig(t testing.TB, size uint, ds datastore
 				}),
 			),
 		}
-		if !cacheEnabled {
-			dispatcherOptions = append(dispatcherOptions, combineddispatch.CacheConfig(&cache.Config{
-				Disabled: true,
-			}))
-		}
 
-		dispatcher, err := combineddispatch.NewDispatcher(
-			dispatcherOptions...,
-		)
+		dispatcher, err := combineddispatch.NewDispatcher(dispatcherOptions...)
 		require.NoError(t, err)
 
 		serverOptions := []server.ConfigOption{
@@ -201,6 +196,7 @@ func TestClusterWithDispatchAndCacheConfig(t testing.TB, size uint, ds datastore
 				Network: util.BufferedNetwork,
 				Enabled: true,
 			}),
+			server.WithExperimentalCaveatsEnabled(true),
 			server.WithSchemaPrefixesRequired(false),
 			server.WithGRPCAuthFunc(func(ctx context.Context) (context.Context, error) {
 				return ctx, nil
@@ -214,29 +210,27 @@ func TestClusterWithDispatchAndCacheConfig(t testing.TB, size uint, ds datastore
 			}),
 			server.WithDispatchClusterMetricsPrefix(fmt.Sprintf("%s_%d_dispatch", prefix, i)),
 		}
-		if !cacheEnabled {
-			serverOptions = append(serverOptions, server.WithDispatchCacheConfig(server.CacheConfig{
-				Disabled: true,
-			}))
-
-			serverOptions = append(serverOptions, server.WithClusterDispatchCacheConfig(server.CacheConfig{
-				Disabled: true,
-			}))
-		}
-
-		srv, err := server.NewConfigWithOptions(
-			serverOptions...,
-		).Complete()
-		require.NoError(t, err)
 
 		ctx, cancel := context.WithCancel(context.Background())
+		srv, err := server.NewConfigWithOptions(serverOptions...).Complete(ctx)
+		require.NoError(t, err)
+
 		go func() {
 			require.NoError(t, srv.Run(ctx))
 		}()
 		cancelFuncs = append(cancelFuncs, cancel)
 
 		dialers = append(dialers, srv.DispatchNetDialContext)
-		conn, err := srv.GRPCDialContext(ctx, grpc.WithBlock())
+		conn, err := srv.GRPCDialContext(ctx,
+			grpc.WithReturnConnectionError(),
+			grpc.WithBlock(),
+			grpc.WithConnectParams(grpc.ConnectParams{
+				Backoff: backoff.Config{
+					BaseDelay:  1 * time.Second,
+					Multiplier: 2,
+					MaxDelay:   15 * time.Second,
+				},
+			}))
 		require.NoError(t, err)
 		conns = append(conns, conn)
 	}

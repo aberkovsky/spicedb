@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 
-	grpcvalidate "github.com/grpc-ecosystem/go-grpc-middleware/validator"
-	"github.com/rs/zerolog/log"
+	grpcvalidate "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/validator"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"github.com/authzed/spicedb/internal/dispatch"
 	"github.com/authzed/spicedb/internal/graph"
+	log "github.com/authzed/spicedb/internal/logging"
 	"github.com/authzed/spicedb/internal/services/shared"
 	dispatchv1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
 )
@@ -27,8 +27,8 @@ func NewDispatchServer(localDispatch dispatch.Dispatcher) dispatchv1.DispatchSer
 	return &dispatchServer{
 		localDispatch: localDispatch,
 		WithServiceSpecificInterceptors: shared.WithServiceSpecificInterceptors{
-			Unary:  grpcvalidate.UnaryServerInterceptor(),
-			Stream: grpcvalidate.StreamServerInterceptor(),
+			Unary:  grpcvalidate.UnaryServerInterceptor(true),
+			Stream: grpcvalidate.StreamServerInterceptor(true),
 		},
 	}
 }
@@ -72,14 +72,17 @@ func rewriteGraphError(ctx context.Context, err error) error {
 	switch {
 	case errors.As(err, &graph.ErrRequestCanceled{}):
 		return status.Errorf(codes.Canceled, "request canceled: %s", err)
-
+	case errors.Is(err, context.DeadlineExceeded):
+		return status.Errorf(codes.DeadlineExceeded, "%s", err)
+	case errors.Is(err, context.Canceled):
+		return status.Errorf(codes.Canceled, "%s", err)
 	case err == nil:
 		return nil
 
 	case errors.As(err, &graph.ErrAlwaysFail{}):
 		fallthrough
 	default:
-		log.Err(err)
+		log.Ctx(ctx).Err(err).Msg("unexpected graph error")
 		return err
 	}
 }

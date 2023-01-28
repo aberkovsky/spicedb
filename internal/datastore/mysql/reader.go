@@ -7,13 +7,12 @@ import (
 	"fmt"
 
 	sq "github.com/Masterminds/squirrel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
+	"github.com/shopspring/decimal"
 
 	"github.com/authzed/spicedb/internal/datastore/common"
-	"github.com/authzed/spicedb/internal/datastore/mysql/migrations"
 	"github.com/authzed/spicedb/internal/datastore/options"
 	"github.com/authzed/spicedb/pkg/datastore"
+	"github.com/authzed/spicedb/pkg/datastore/revision"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 )
 
@@ -45,6 +44,7 @@ var schema = common.SchemaInformation{
 	ColUsersetNamespace: colUsersetNamespace,
 	ColUsersetObjectID:  colUsersetObjectID,
 	ColUsersetRelation:  colUsersetRelation,
+	ColCaveatName:       colCaveatName,
 }
 
 func (mr *mysqlReader) QueryRelationships(
@@ -53,7 +53,11 @@ func (mr *mysqlReader) QueryRelationships(
 	opts ...options.QueryOptionsOption,
 ) (iter datastore.RelationshipIterator, err error) {
 	// TODO (@vroldanbet) dupe from postgres datastore - need to refactor
-	qBuilder := common.NewSchemaQueryFilterer(schema, mr.filterer(mr.QueryTuplesQuery)).FilterWithRelationshipsFilter(filter)
+	qBuilder, err := common.NewSchemaQueryFilterer(schema, mr.filterer(mr.QueryTuplesQuery)).FilterWithRelationshipsFilter(filter)
+	if err != nil {
+		return nil, err
+	}
+
 	return mr.querySplitter.SplitAndExecuteQuery(ctx, qBuilder, opts...)
 }
 
@@ -63,8 +67,11 @@ func (mr *mysqlReader) ReverseQueryRelationships(
 	opts ...options.ReverseQueryOptionsOption,
 ) (iter datastore.RelationshipIterator, err error) {
 	// TODO (@vroldanbet) dupe from postgres datastore - need to refactor
-	qBuilder := common.NewSchemaQueryFilterer(schema, mr.filterer(mr.QueryTuplesQuery)).
-		FilterWithSubjectsFilter(subjectsFilter)
+	qBuilder, err := common.NewSchemaQueryFilterer(schema, mr.filterer(mr.QueryTuplesQuery)).
+		FilterWithSubjectsSelectors(subjectsFilter.AsSelector())
+	if err != nil {
+		return nil, err
+	}
 
 	queryOpts := options.NewReverseQueryOptionsWithOptions(opts...)
 
@@ -83,16 +90,11 @@ func (mr *mysqlReader) ReverseQueryRelationships(
 
 func (mr *mysqlReader) ReadNamespace(ctx context.Context, nsName string) (*core.NamespaceDefinition, datastore.Revision, error) {
 	// TODO (@vroldanbet) dupe from postgres datastore - need to refactor
-	ctx, span := tracer.Start(ctx, "ReadNamespace", trace.WithAttributes(
-		attribute.String("name", nsName),
-	))
-	defer span.End()
-
 	tx, txCleanup, err := mr.txSource(ctx)
 	if err != nil {
 		return nil, datastore.NoRevision, fmt.Errorf(errUnableToReadConfig, err)
 	}
-	defer migrations.LogOnError(ctx, txCleanup)
+	defer common.LogOnError(ctx, txCleanup)
 
 	loaded, version, err := loadNamespace(ctx, nsName, tx, mr.filterer(mr.ReadNamespaceQuery))
 	switch {
@@ -107,8 +109,6 @@ func (mr *mysqlReader) ReadNamespace(ctx context.Context, nsName string) (*core.
 
 func loadNamespace(ctx context.Context, namespace string, tx *sql.Tx, baseQuery sq.SelectBuilder) (*core.NamespaceDefinition, datastore.Revision, error) {
 	// TODO (@vroldanbet) dupe from postgres datastore - need to refactor
-	ctx = datastore.SeparateContextWithTracing(ctx)
-
 	ctx, span := tracer.Start(ctx, "loadNamespace")
 	defer span.End()
 
@@ -118,7 +118,7 @@ func loadNamespace(ctx context.Context, namespace string, tx *sql.Tx, baseQuery 
 	}
 
 	var config []byte
-	var version datastore.Revision
+	var version decimal.Decimal
 	err = tx.QueryRowContext(ctx, query, args...).Scan(&config, &version)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -132,18 +132,16 @@ func loadNamespace(ctx context.Context, namespace string, tx *sql.Tx, baseQuery 
 		return nil, datastore.NoRevision, err
 	}
 
-	return loaded, version, nil
+	return loaded, revision.NewFromDecimal(version), nil
 }
 
 func (mr *mysqlReader) ListNamespaces(ctx context.Context) ([]*core.NamespaceDefinition, error) {
 	// TODO (@vroldanbet) dupe from postgres datastore - need to refactor
-	ctx = datastore.SeparateContextWithTracing(ctx)
-
 	tx, txCleanup, err := mr.txSource(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer migrations.LogOnError(ctx, txCleanup)
+	defer common.LogOnError(ctx, txCleanup)
 
 	query := mr.filterer(mr.ReadNamespaceQuery)
 
@@ -161,13 +159,11 @@ func (mr *mysqlReader) LookupNamespaces(ctx context.Context, nsNames []string) (
 	}
 
 	// TODO (@vroldanbet) dupe from postgres datastore - need to refactor
-	ctx = datastore.SeparateContextWithTracing(ctx)
-
 	tx, txCleanup, err := mr.txSource(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer migrations.LogOnError(ctx, txCleanup)
+	defer common.LogOnError(ctx, txCleanup)
 
 	clause := sq.Or{}
 	for _, nsName := range nsNames {
@@ -197,11 +193,11 @@ func loadAllNamespaces(ctx context.Context, tx *sql.Tx, queryBuilder sq.SelectBu
 	if err != nil {
 		return nil, err
 	}
-	defer migrations.LogOnError(ctx, rows.Close)
+	defer common.LogOnError(ctx, rows.Close)
 
 	for rows.Next() {
 		var config []byte
-		var version datastore.Revision
+		var version decimal.Decimal
 		if err := rows.Scan(&config, &version); err != nil {
 			return nil, err
 		}

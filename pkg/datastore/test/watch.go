@@ -20,6 +20,8 @@ import (
 	"github.com/authzed/spicedb/pkg/tuple"
 )
 
+const waitForChangesTimeout = 5 * time.Second
+
 // WatchTest tests whether or not the requirements for watching changes hold
 // for a particular datastore.
 func WatchTest(t *testing.T, tester DatastoreTester) {
@@ -87,8 +89,8 @@ func WatchTest(t *testing.T, tester DatastoreTester) {
 
 			testUpdates = append(testUpdates, batch, []*core.RelationTupleUpdate{deleteUpdate})
 
-			_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-				err := rwt.DeleteRelationships(&v1.RelationshipFilter{
+			_, err = ds.ReadWriteTx(ctx, func(rwt datastore.ReadWriteTransaction) error {
+				err := rwt.DeleteRelationships(ctx, &v1.RelationshipFilter{
 					ResourceType:     testResourceNamespace,
 					OptionalRelation: testReaderRelation,
 					OptionalSubjectFilter: &v1.SubjectFilter{
@@ -122,18 +124,18 @@ func verifyUpdates(
 	expectDisconnect bool,
 ) {
 	for _, expected := range testUpdates {
-		changeWait := time.NewTimer(5 * time.Second)
+		changeWait := time.NewTimer(waitForChangesTimeout)
 		select {
 		case change, ok := <-changes:
 			if !ok {
-				require.True(expectDisconnect)
-				errWait := time.NewTimer(2 * time.Second)
+				require.True(expectDisconnect, "unexpected disconnect")
+				errWait := time.NewTimer(waitForChangesTimeout)
 				select {
 				case err := <-errchan:
 					require.True(errors.As(err, &datastore.ErrWatchDisconnected{}))
 					return
 				case <-errWait.C:
-					require.Fail("Timed out")
+					require.Fail("Timed out waiting for ErrWatchDisconnected")
 				}
 				return
 			}
@@ -146,18 +148,20 @@ func verifyUpdates(
 
 			require.True(missingExpected.IsEmpty(), "expected changes missing: %s", missingExpected)
 			require.True(unexpected.IsEmpty(), "unexpected changes: %s", unexpected)
+
+			time.Sleep(1 * time.Millisecond)
 		case <-changeWait.C:
 			require.Fail("Timed out", "waiting for changes: %s", expected)
 		}
 	}
 
-	require.False(expectDisconnect)
+	require.False(expectDisconnect, "all changes verified without expected disconnect")
 }
 
 func setOfChanges(changes []*core.RelationTupleUpdate) *strset.Set {
 	changeSet := strset.NewWithSize(len(changes))
 	for _, change := range changes {
-		changeSet.Add(fmt.Sprintf("OPERATION_%s(%s)", change.Operation, tuple.String(change.Tuple)))
+		changeSet.Add(fmt.Sprintf("OPERATION_%s(%s)", change.Operation, tuple.StringWithoutCaveat(change.Tuple)))
 	}
 	return changeSet
 }
@@ -182,7 +186,7 @@ func WatchCancelTest(t *testing.T, tester DatastoreTester) {
 	cancel()
 
 	for {
-		changeWait := time.NewTimer(250 * time.Millisecond)
+		changeWait := time.NewTimer(waitForChangesTimeout)
 		select {
 		case created, ok := <-changes:
 			if ok {
@@ -194,14 +198,14 @@ func WatchCancelTest(t *testing.T, tester DatastoreTester) {
 				require.Empty(foundDiff)
 				require.True(created.Revision.GreaterThan(datastore.NoRevision))
 			} else {
-				errWait := time.NewTimer(100 * time.Millisecond)
+				errWait := time.NewTimer(waitForChangesTimeout)
 				require.Zero(created)
 				select {
 				case err := <-errchan:
 					require.True(errors.As(err, &datastore.ErrWatchCanceled{}))
 					return
 				case <-errWait.C:
-					require.Fail("Timed out")
+					require.Fail("Timed out waiting for ErrWatchCanceled")
 				}
 				return
 			}

@@ -39,14 +39,16 @@ func (pgd *pgDatastore) Statistics(ctx context.Context) (datastore.Stats, error)
 		return datastore.Stats{}, fmt.Errorf("unable to prepare row count sql: %w", err)
 	}
 
-	nsQuery := readNamespace.Where(sq.Eq{colDeletedTxn: liveDeletedTxnID})
+	filterer := func(original sq.SelectBuilder) sq.SelectBuilder {
+		return original.Where(sq.Eq{colDeletedXid: liveDeletedTxnID})
+	}
 
 	var uniqueID string
 	var nsDefs []*corev1.NamespaceDefinition
 	var relCount int64
 	if err := pgd.dbpool.BeginTxFunc(ctx, pgd.readTxOptions, func(tx pgx.Tx) error {
 		if pgd.analyzeBeforeStatistics {
-			if _, err := tx.Exec(ctx, fmt.Sprintf("ANALYZE %s", tableTuple)); err != nil {
+			if _, err := tx.Exec(ctx, "ANALYZE "+tableTuple); err != nil {
 				return fmt.Errorf("unable to analyze tuple table: %w", err)
 			}
 		}
@@ -55,10 +57,12 @@ func (pgd *pgDatastore) Statistics(ctx context.Context) (datastore.Stats, error)
 			return fmt.Errorf("unable to query unique ID: %w", err)
 		}
 
-		nsDefs, err = loadAllNamespaces(ctx, tx, nsQuery)
+		nsDefsWithRevisions, err := loadAllNamespaces(ctx, tx, filterer)
 		if err != nil {
 			return fmt.Errorf("unable to load namespaces: %w", err)
 		}
+
+		nsDefs = stripRevisions(nsDefsWithRevisions)
 
 		if err := tx.QueryRow(ctx, rowCountSQL, rowCountArgs...).Scan(&relCount); err != nil {
 			return fmt.Errorf("unable to read relationship count: %w", err)

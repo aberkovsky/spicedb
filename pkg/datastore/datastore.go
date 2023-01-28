@@ -2,15 +2,18 @@ package datastore
 
 import (
 	"context"
+	"encoding"
 	"fmt"
 	"sort"
 	"strings"
 
+	"github.com/authzed/spicedb/pkg/tuple"
+
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
-	"github.com/shopspring/decimal"
 
 	"github.com/authzed/spicedb/internal/datastore/options"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
+	"github.com/authzed/spicedb/pkg/spiceerrors"
 )
 
 var Engines []string
@@ -27,7 +30,7 @@ func EngineOptions() string {
 	ids := SortedEngineIDs()
 	quoted := make([]string, 0, len(ids))
 	for _, id := range ids {
-		quoted = append(quoted, fmt.Sprintf("%q", id))
+		quoted = append(quoted, `"`+id+`"`)
 	}
 	return strings.Join(quoted, ", ")
 }
@@ -38,7 +41,7 @@ const Ellipsis = "..."
 
 // FilterMaximumIDCount is the maximum number of resource IDs or subject IDs that can be sent into
 // a filter.
-const FilterMaximumIDCount = 100
+const FilterMaximumIDCount uint16 = 100
 
 // RevisionChanges represents the changes in a single transaction.
 type RevisionChanges struct {
@@ -57,8 +60,13 @@ type RelationshipsFilter struct {
 	// OptionalResourceRelation is the relation of the resource to find. If empty, any relation is allowed.
 	OptionalResourceRelation string
 
-	// OptionalSubjectsFilter is the filter to use for subjects of the relationship. If nil, all subjects are allowed.
-	OptionalSubjectsFilter *SubjectsFilter
+	// OptionalSubjectsSelectors is the selectors to use for subjects of the relationship. If nil, all subjects are allowed.
+	// If specified, relationships matching *any* selector will be returned.
+	OptionalSubjectsSelectors []SubjectsSelector
+
+	// OptionalCaveatName is the filter to use for caveated relationships, filtering by a specific caveat name.
+	// If nil, all caveated and non-caveated relationships are allowed
+	OptionalCaveatName string
 }
 
 // RelationshipsFilterFromPublicFilter constructs a datastore RelationshipsFilter from an API-defined RelationshipFilter.
@@ -68,7 +76,7 @@ func RelationshipsFilterFromPublicFilter(filter *v1.RelationshipFilter) Relation
 		resourceIds = []string{filter.OptionalResourceId}
 	}
 
-	var subjectsFilter *SubjectsFilter
+	var subjectsSelectors []SubjectsSelector
 	if filter.OptionalSubjectFilter != nil {
 		var subjectIds []string
 		if filter.OptionalSubjectFilter.OptionalSubjectId != "" {
@@ -86,25 +94,25 @@ func RelationshipsFilterFromPublicFilter(filter *v1.RelationshipFilter) Relation
 			}
 		}
 
-		subjectsFilter = &SubjectsFilter{
-			SubjectType:        filter.OptionalSubjectFilter.SubjectType,
-			OptionalSubjectIds: subjectIds,
-			RelationFilter:     relationFilter,
-		}
+		subjectsSelectors = append(subjectsSelectors, SubjectsSelector{
+			OptionalSubjectType: filter.OptionalSubjectFilter.SubjectType,
+			OptionalSubjectIds:  subjectIds,
+			RelationFilter:      relationFilter,
+		})
 	}
 
 	return RelationshipsFilter{
-		ResourceType:             filter.ResourceType,
-		OptionalResourceIds:      resourceIds,
-		OptionalResourceRelation: filter.OptionalRelation,
-		OptionalSubjectsFilter:   subjectsFilter,
+		ResourceType:              filter.ResourceType,
+		OptionalResourceIds:       resourceIds,
+		OptionalResourceRelation:  filter.OptionalRelation,
+		OptionalSubjectsSelectors: subjectsSelectors,
 	}
 }
 
-// SubjectsFilter is a filter for subjects.
-type SubjectsFilter struct {
-	// SubjectType is the namespace/type for the subjects to be found.
-	SubjectType string
+// SubjectsSelector is a selector for subjects.
+type SubjectsSelector struct {
+	// OptionalSubjectType is the namespace/type for the subjects to be found, if any.
+	OptionalSubjectType string
 
 	// OptionalSubjectIds are the IDs of the subjects to find. If nil or empty, any subject ID will be allowed.
 	OptionalSubjectIds []string
@@ -123,12 +131,25 @@ type SubjectRelationFilter struct {
 	// IncludeEllipsisRelation, if true, indicates that the ellipsis relation
 	// should be included as an option.
 	IncludeEllipsisRelation bool
+
+	// OnlyNonEllipsisRelations, if true, indicates that only non-ellipsis relations
+	// should be included.
+	OnlyNonEllipsisRelations bool
+}
+
+// WithOnlyNonEllipsisRelations indicates that only non-ellipsis relations should be included.
+func (sf SubjectRelationFilter) WithOnlyNonEllipsisRelations() SubjectRelationFilter {
+	sf.OnlyNonEllipsisRelations = true
+	sf.NonEllipsisRelation = ""
+	sf.IncludeEllipsisRelation = false
+	return sf
 }
 
 // WithEllipsisRelation indicates that the subject filter should include the ellipsis relation
 // as an option for the subjects' relation.
 func (sf SubjectRelationFilter) WithEllipsisRelation() SubjectRelationFilter {
 	sf.IncludeEllipsisRelation = true
+	sf.OnlyNonEllipsisRelations = false
 	return sf
 }
 
@@ -136,15 +157,49 @@ func (sf SubjectRelationFilter) WithEllipsisRelation() SubjectRelationFilter {
 // option for the subjects' relation.
 func (sf SubjectRelationFilter) WithNonEllipsisRelation(relation string) SubjectRelationFilter {
 	sf.NonEllipsisRelation = relation
+	sf.OnlyNonEllipsisRelations = false
 	return sf
+}
+
+// WithRelation indicates that the specified relation should be included as an
+// option for the subjects' relation.
+func (sf SubjectRelationFilter) WithRelation(relation string) SubjectRelationFilter {
+	if relation == tuple.Ellipsis {
+		return sf.WithEllipsisRelation()
+	}
+	return sf.WithNonEllipsisRelation(relation)
 }
 
 // IsEmpty returns true if the subject relation filter is empty.
 func (sf SubjectRelationFilter) IsEmpty() bool {
-	return !sf.IncludeEllipsisRelation && sf.NonEllipsisRelation == ""
+	return !sf.IncludeEllipsisRelation && sf.NonEllipsisRelation == "" && !sf.OnlyNonEllipsisRelations
 }
 
+// SubjectsFilter is a filter for subjects.
+type SubjectsFilter struct {
+	// SubjectType is the namespace/type for the subjects to be found.
+	SubjectType string
+
+	// OptionalSubjectIds are the IDs of the subjects to find. If nil or empty, any subject ID will be allowed.
+	OptionalSubjectIds []string
+
+	// RelationFilter is the filter to use for the relation(s) of the subjects. If neither field
+	// is set, any relation is allowed.
+	RelationFilter SubjectRelationFilter
+}
+
+func (sf SubjectsFilter) AsSelector() SubjectsSelector {
+	return SubjectsSelector{
+		OptionalSubjectType: sf.SubjectType,
+		OptionalSubjectIds:  sf.OptionalSubjectIds,
+		RelationFilter:      sf.RelationFilter,
+	}
+}
+
+// Reader is an interface for reading relationships from the datastore.
 type Reader interface {
+	CaveatReader
+
 	// QueryRelationships reads relationships, starting from the resource side.
 	QueryRelationships(
 		ctx context.Context,
@@ -155,7 +210,7 @@ type Reader interface {
 	// ReverseQueryRelationships reads relationships, starting from the subject.
 	ReverseQueryRelationships(
 		ctx context.Context,
-		subjectFilter SubjectsFilter,
+		subjectsFilter SubjectsFilter,
 		options ...options.ReverseQueryOptionsOption,
 	) (RelationshipIterator, error)
 
@@ -172,22 +227,23 @@ type Reader interface {
 
 type ReadWriteTransaction interface {
 	Reader
+	CaveatStorer
 
 	// WriteRelationships takes a list of tuple mutations and applies them to the datastore.
-	WriteRelationships(mutations []*core.RelationTupleUpdate) error
+	WriteRelationships(ctx context.Context, mutations []*core.RelationTupleUpdate) error
 
 	// DeleteRelationships deletes all Relationships that match the provided filter.
-	DeleteRelationships(filter *v1.RelationshipFilter) error
+	DeleteRelationships(ctx context.Context, filter *v1.RelationshipFilter) error
 
 	// WriteNamespaces takes proto namespace definitions and persists them.
-	WriteNamespaces(newConfigs ...*core.NamespaceDefinition) error
+	WriteNamespaces(ctx context.Context, newConfigs ...*core.NamespaceDefinition) error
 
-	// DeleteNamespace deletes a namespace and any associated tuples.
-	DeleteNamespace(nsName string) error
+	// DeleteNamespaces deletes namespaces including associated relationships.
+	DeleteNamespaces(ctx context.Context, nsNames ...string) error
 }
 
 // TxUserFunc is a type for the function that users supply when they invoke a read-write transaction.
-type TxUserFunc func(context.Context, ReadWriteTransaction) error
+type TxUserFunc func(ReadWriteTransaction) error
 
 // Datastore represents tuple access for a single namespace.
 type Datastore interface {
@@ -211,6 +267,10 @@ type Datastore interface {
 	// hasn't been garbage collected.
 	CheckRevision(ctx context.Context, revision Revision) error
 
+	// RevisionFromString will parse the revision text and return the specific type of Revision
+	// used by the specific datastore implementation.
+	RevisionFromString(serialized string) (Revision, error)
+
 	// Watch notifies the caller about all changes to tuples.
 	//
 	// All events following afterRevision will be sent to the caller.
@@ -230,6 +290,13 @@ type Datastore interface {
 
 	// Close closes the data store.
 	Close() error
+}
+
+// UnwrappableDatastore represents a datastore that can be unwrapped into the underlying
+// datastore.
+type UnwrappableDatastore interface {
+	// Unwrap returns the wrapped datastore.
+	Unwrap() Datastore
 }
 
 // Feature represents a capability that a datastore can support, plus an
@@ -281,12 +348,45 @@ type RelationshipIterator interface {
 	Close()
 }
 
-// Revision is a type alias to make changing the revision type a bit
-// easier if we need to do it in the future. Implementations should code
-// directly against decimal.Decimal when creating or parsing.
-type Revision = decimal.Decimal
+// Revision is an interface for a comparable revision type that can be different for
+// each datastore implementation.
+type Revision interface {
+	fmt.Stringer
+	encoding.BinaryMarshaler
+
+	// Equal returns whether the revisions should be considered equal.
+	Equal(Revision) bool
+
+	// Equal returns whether the receiver is provably greater than the right hand side.
+	GreaterThan(Revision) bool
+
+	// Equal returns whether the receiver is provably less than the right hand side.
+	LessThan(Revision) bool
+}
+
+type nilRevision struct{}
+
+func (nilRevision) Equal(rhs Revision) bool {
+	return rhs == NoRevision
+}
+
+func (nilRevision) GreaterThan(rhs Revision) bool {
+	return false
+}
+
+func (nilRevision) LessThan(rhs Revision) bool {
+	return true
+}
+
+func (nilRevision) String() string {
+	return "nil"
+}
+
+func (nilRevision) MarshalBinary() ([]byte, error) {
+	return nil, spiceerrors.MustBugf("the nil revision should never be serialized")
+}
 
 // NoRevision is a zero type for the revision that will make changing the
 // revision type in the future a bit easier if necessary. Implementations
 // should use any time they want to signal an empty/error revision.
-var NoRevision Revision
+var NoRevision Revision = nilRevision{}

@@ -6,13 +6,12 @@ import (
 	"fmt"
 	"time"
 
-	pgxcommon "github.com/authzed/spicedb/internal/datastore/postgres/common"
-
 	sq "github.com/Masterminds/squirrel"
 	"github.com/jackc/pgx/v4"
 
 	"github.com/authzed/spicedb/internal/datastore/common"
 	"github.com/authzed/spicedb/internal/datastore/options"
+	pgxcommon "github.com/authzed/spicedb/internal/datastore/postgres/common"
 	"github.com/authzed/spicedb/pkg/datastore"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 )
@@ -32,6 +31,8 @@ var (
 		colUsersetNamespace,
 		colUsersetObjectID,
 		colUsersetRelation,
+		colCaveatContextName,
+		colCaveatContext,
 	).From(tableTuple)
 
 	schema = common.SchemaInformation{
@@ -41,6 +42,7 @@ var (
 		ColUsersetNamespace: colUsersetNamespace,
 		ColUsersetObjectID:  colUsersetObjectID,
 		ColUsersetRelation:  colUsersetRelation,
+		ColCaveatName:       colCaveatContextName,
 	}
 )
 
@@ -56,8 +58,6 @@ func (cr *crdbReader) ReadNamespace(
 	ctx context.Context,
 	nsName string,
 ) (*core.NamespaceDefinition, datastore.Revision, error) {
-	ctx = datastore.SeparateContextWithTracing(ctx)
-
 	var config *core.NamespaceDefinition
 	var timestamp time.Time
 	if err := cr.execute(ctx, func(ctx context.Context) error {
@@ -86,8 +86,6 @@ func (cr *crdbReader) ReadNamespace(
 }
 
 func (cr *crdbReader) ListNamespaces(ctx context.Context) ([]*core.NamespaceDefinition, error) {
-	ctx = datastore.SeparateContextWithTracing(ctx)
-
 	var nsDefs []*core.NamespaceDefinition
 	if err := cr.execute(ctx, func(ctx context.Context) error {
 		tx, txCleanup, err := cr.txSource(ctx)
@@ -116,8 +114,6 @@ func (cr *crdbReader) LookupNamespaces(ctx context.Context, nsNames []string) ([
 	if len(nsNames) == 0 {
 		return nil, nil
 	}
-
-	ctx = datastore.SeparateContextWithTracing(ctx)
 
 	var nsDefs []*core.NamespaceDefinition
 	if err := cr.execute(ctx, func(ctx context.Context) error {
@@ -148,7 +144,10 @@ func (cr *crdbReader) QueryRelationships(
 	filter datastore.RelationshipsFilter,
 	opts ...options.QueryOptionsOption,
 ) (iter datastore.RelationshipIterator, err error) {
-	qBuilder := common.NewSchemaQueryFilterer(schema, queryTuples).FilterWithRelationshipsFilter(filter)
+	qBuilder, err := common.NewSchemaQueryFilterer(schema, queryTuples).FilterWithRelationshipsFilter(filter)
+	if err != nil {
+		return nil, err
+	}
 
 	if err := cr.execute(ctx, func(ctx context.Context) error {
 		iter, err = cr.querySplitter.SplitAndExecuteQuery(ctx, qBuilder, opts...)
@@ -165,8 +164,11 @@ func (cr *crdbReader) ReverseQueryRelationships(
 	subjectsFilter datastore.SubjectsFilter,
 	opts ...options.ReverseQueryOptionsOption,
 ) (iter datastore.RelationshipIterator, err error) {
-	qBuilder := common.NewSchemaQueryFilterer(schema, queryTuples).
-		FilterWithSubjectsFilter(subjectsFilter)
+	qBuilder, err := common.NewSchemaQueryFilterer(schema, queryTuples).
+		FilterWithSubjectsSelectors(subjectsFilter.AsSelector())
+	if err != nil {
+		return nil, err
+	}
 
 	queryOpts := options.NewReverseQueryOptionsWithOptions(opts...)
 

@@ -1,25 +1,15 @@
 ---
 name: "Lint"
-on: # yamllint disable-line rule:truthy
+on:  # yamllint disable-line rule:truthy
   push:
     branches:
       - "!dependabot/*"
       - "main"
   pull_request:
     branches: ["*"]
+env:
+  GO_VERSION: "~1.19.4"
 jobs:
-  unit-analyzers:
-    name: "Unit Test Analyzers"
-    runs-on: "ubuntu-latest"
-    steps:
-      - uses: "actions/checkout@v3"
-      - uses: "actions/setup-go@v3"
-        with:
-          go-version: "~1.19.1"
-      - uses: "authzed/actions/go-test@main"
-        with:
-          working_directory: "tools/analyzers"
-
   go-lint:
     name: "Lint Go"
     runs-on: "ubuntu-latest"
@@ -27,7 +17,8 @@ jobs:
       - uses: "actions/checkout@v3"
       - uses: "actions/setup-go@v3"
         with:
-          go-version: "~1.19.1"
+          go-version: "${{ env.GO_VERSION }}"
+          cache: "true"
       - uses: "authzed/actions/gofumpt@main"
       - uses: "authzed/actions/gofumpt@main"
         with:
@@ -48,7 +39,19 @@ jobs:
         with:
           working_directory: "tools/analyzers"
       - name: "Run custom analyzers"
-        run: './tools/analyzers/analyzers -skip-pkg "github.com/authzed/spicedb/pkg/proto/dispatch/v1" -disallowed-nil-return-type-paths "*github.com/authzed/spicedb/pkg/proto/dispatch/v1.DispatchCheckResponse,*github.com/authzed/spicedb/pkg/proto/dispatch/v1.DispatchExpandResponse,*github.com/authzed/spicedb/pkg/proto/dispatch/v1.DispatchLookupResponse" ./...'
+        run: >
+          ./tools/analyzers/analyzers
+          -nilvaluecheck
+          -nilvaluecheck.skip-pkg "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
+          -nilvaluecheck.disallowed-nil-return-type-paths "*github.com/authzed/spicedb/pkg/proto/dispatch/v1.DispatchCheckResponse,*github.com/authzed/spicedb/pkg/proto/dispatch/v1.DispatchExpandResponse,*github.com/authzed/spicedb/pkg/proto/dispatch/v1.DispatchLookupResponse"
+          -exprstatementcheck
+          -exprstatementcheck.disallowed-expr-statement-types "*github.com/rs/zerolog.Event:MarshalZerologObject:missing Send or Msg on zerolog log Event"
+          -closeafterusagecheck
+          -closeafterusagecheck.must-be-closed-after-usage-types="github.com/authzed/spicedb/pkg/datastore.RelationshipIterator"
+          -closeafterusagecheck.skip-pkg="github.com/authzed/spicedb/pkg/datastore,github.com/authzed/spicedb/internal/datastore,github.com/authzed/spicedb/internal/testfixtures"
+          -paniccheck
+          -paniccheck.skip-files="_test,zz_"
+          ./...
       - uses: "authzed/actions/govulncheck@main"
 
   extra-lint:

@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"time"
 
 	"cloud.google.com/go/spanner"
 	sq "github.com/Masterminds/squirrel"
-	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc/codes"
@@ -17,7 +17,9 @@ import (
 	"github.com/authzed/spicedb/internal/datastore/common"
 	"github.com/authzed/spicedb/internal/datastore/common/revisions"
 	"github.com/authzed/spicedb/internal/datastore/spanner/migrations"
+	log "github.com/authzed/spicedb/internal/logging"
 	"github.com/authzed/spicedb/pkg/datastore"
+	"github.com/authzed/spicedb/pkg/datastore/revision"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 )
 
@@ -40,6 +42,11 @@ const (
 	errUnableToDeleteConfig   = "unable to delete namespace config: %w"
 	errUnableToListNamespaces = "unable to list namespaces: %w"
 
+	errUnableToReadCaveat   = "unable to read caveat: %w"
+	errUnableToWriteCaveat  = "unable to write caveat: %w"
+	errUnableToListCaveats  = "unable to list caveats: %w"
+	errUnableToDeleteCaveat = "unable to delete caveat: %w"
+
 	// Spanner requires a much smaller userset batch size than other datastores because of the
 	// limitation on the maximum number of function calls.
 	// https://cloud.google.com/spanner/quotas
@@ -56,6 +63,8 @@ var (
 
 type spannerDatastore struct {
 	*revisions.RemoteClockRevisions
+	revision.DecimalDecoder
+
 	client *spanner.Client
 	config spannerOptions
 	stopGC context.CancelFunc
@@ -96,7 +105,7 @@ func NewSpannerDatastore(database string, opts ...Option) (datastore.Datastore, 
 		client: client,
 		config: config,
 	}
-	ds.RemoteClockRevisions.SetNowFunc(ds.HeadRevision)
+	ds.RemoteClockRevisions.SetNowFunc(ds.headRevisionInternal)
 
 	if config.gcInterval > 0*time.Minute && config.gcEnabled {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -106,13 +115,15 @@ func NewSpannerDatastore(database string, opts ...Option) (datastore.Datastore, 
 		}
 		ds.stopGC = cancel
 	} else {
-		log.Warn().Msg("datastore garbage collection disabled")
+		log.Warn().Msg("datastore background garbage collection disabled")
 	}
 
 	return ds, nil
 }
 
-func (sd spannerDatastore) SnapshotReader(revision datastore.Revision) datastore.Reader {
+func (sd spannerDatastore) SnapshotReader(revisionRaw datastore.Revision) datastore.Reader {
+	revision := revisionRaw.(revision.Decimal)
+
 	txSource := func() readTX {
 		return sd.client.Single().WithTimestampBound(spanner.ReadTimestamp(timestampFromRevision(revision)))
 	}
@@ -137,8 +148,8 @@ func (sd spannerDatastore) ReadWriteTx(
 			Executor:         queryExecutor(txSource),
 			UsersetBatchSize: usersetBatchsize,
 		}
-		rwt := spannerReadWriteTXN{spannerReader{querySplitter, txSource}, ctx, spannerRWT}
-		return fn(ctx, rwt)
+		rwt := spannerReadWriteTXN{spannerReader{querySplitter, txSource}, spannerRWT}
+		return fn(rwt)
 	})
 	if err != nil {
 		if cerr := convertToWriteConstraintError(err); cerr != nil {
@@ -183,8 +194,7 @@ func (sd spannerDatastore) Close() error {
 func statementFromSQL(sql string, args []interface{}) spanner.Statement {
 	params := make(map[string]interface{}, len(args))
 	for index, arg := range args {
-		paramName := fmt.Sprintf("p%d", index+1)
-		params[paramName] = arg
+		params["p"+strconv.Itoa(index+1)] = arg
 	}
 
 	return spanner.Statement{

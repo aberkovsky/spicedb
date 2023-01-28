@@ -37,7 +37,11 @@ func (sr spannerReader) QueryRelationships(
 	filter datastore.RelationshipsFilter,
 	opts ...options.QueryOptionsOption,
 ) (iter datastore.RelationshipIterator, err error) {
-	qBuilder := common.NewSchemaQueryFilterer(schema, queryTuples).FilterWithRelationshipsFilter(filter)
+	qBuilder, err := common.NewSchemaQueryFilterer(schema, queryTuples).FilterWithRelationshipsFilter(filter)
+	if err != nil {
+		return nil, err
+	}
+
 	return sr.querySplitter.SplitAndExecuteQuery(ctx, qBuilder, opts...)
 }
 
@@ -46,8 +50,11 @@ func (sr spannerReader) ReverseQueryRelationships(
 	subjectsFilter datastore.SubjectsFilter,
 	opts ...options.ReverseQueryOptionsOption,
 ) (iter datastore.RelationshipIterator, err error) {
-	qBuilder := common.NewSchemaQueryFilterer(schema, queryTuples).
-		FilterWithSubjectsFilter(subjectsFilter)
+	qBuilder, err := common.NewSchemaQueryFilterer(schema, queryTuples).
+		FilterWithSubjectsSelectors(subjectsFilter.AsSelector())
+	if err != nil {
+		return nil, err
+	}
 
 	queryOpts := options.NewReverseQueryOptionsWithOptions(opts...)
 
@@ -81,6 +88,8 @@ func queryExecutor(txSource txFactory) common.ExecuteQueryFunc {
 				ResourceAndRelation: &core.ObjectAndRelation{},
 				Subject:             &core.ObjectAndRelation{},
 			}
+			var caveatName spanner.NullString
+			var caveatCtx spanner.NullJSON
 			err := row.Columns(
 				&nextTuple.ResourceAndRelation.Namespace,
 				&nextTuple.ResourceAndRelation.ObjectId,
@@ -88,7 +97,14 @@ func queryExecutor(txSource txFactory) common.ExecuteQueryFunc {
 				&nextTuple.Subject.Namespace,
 				&nextTuple.Subject.ObjectId,
 				&nextTuple.Subject.Relation,
+				&caveatName,
+				&caveatCtx,
 			)
+			if err != nil {
+				return err
+			}
+
+			nextTuple.Caveat, err = ContextualizedCaveatFrom(caveatName, caveatCtx)
 			if err != nil {
 				return err
 			}
@@ -105,9 +121,6 @@ func queryExecutor(txSource txFactory) common.ExecuteQueryFunc {
 }
 
 func (sr spannerReader) ReadNamespace(ctx context.Context, nsName string) (*core.NamespaceDefinition, datastore.Revision, error) {
-	ctx, span := tracer.Start(ctx, "ReadNamespace")
-	defer span.End()
-
 	nsKey := spanner.Key{nsName}
 	row, err := sr.txSource().ReadRow(
 		ctx,
@@ -137,9 +150,6 @@ func (sr spannerReader) ReadNamespace(ctx context.Context, nsName string) (*core
 }
 
 func (sr spannerReader) ListNamespaces(ctx context.Context) ([]*core.NamespaceDefinition, error) {
-	ctx, span := tracer.Start(ctx, "ListNamespaces")
-	defer span.End()
-
 	iter := sr.txSource().Read(
 		ctx,
 		tableNamespace,
@@ -159,9 +169,6 @@ func (sr spannerReader) LookupNamespaces(ctx context.Context, nsNames []string) 
 	if len(nsNames) == 0 {
 		return nil, nil
 	}
-
-	ctx, span := tracer.Start(ctx, "LookupNamespaces")
-	defer span.End()
 
 	keys := make([]spanner.Key, 0, len(nsNames))
 	for _, nsName := range nsNames {
@@ -213,6 +220,8 @@ var queryTuples = sql.Select(
 	colUsersetNamespace,
 	colUsersetObjectID,
 	colUsersetRelation,
+	colCaveatName,
+	colCaveatContext,
 ).From(tableRelationship)
 
 var schema = common.SchemaInformation{
@@ -222,6 +231,7 @@ var schema = common.SchemaInformation{
 	ColUsersetNamespace: colUsersetNamespace,
 	ColUsersetObjectID:  colUsersetObjectID,
 	ColUsersetRelation:  colUsersetRelation,
+	ColCaveatName:       colCaveatName,
 }
 
 var _ datastore.Reader = spannerReader{}

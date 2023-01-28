@@ -1,13 +1,12 @@
 package migrations
 
-import "fmt"
-
 const (
 	tableNamespaceDefault   = "namespace_config"
 	tableTransactionDefault = "relation_tuple_transaction"
 	tableTupleDefault       = "relation_tuple"
 	tableMigrationVersion   = "mysql_migration_version"
 	tableMetadataDefault    = "mysql_metadata"
+	tableCaveatDefault      = "caveat"
 )
 
 type tables struct {
@@ -16,15 +15,17 @@ type tables struct {
 	tableTuple            string
 	tableNamespace        string
 	tableMetadata         string
+	tableCaveat           string
 }
 
 func newTables(prefix string) *tables {
 	return &tables{
-		tableMigrationVersion: fmt.Sprintf("%s%s", prefix, tableMigrationVersion),
-		tableTransaction:      fmt.Sprintf("%s%s", prefix, tableTransactionDefault),
-		tableTuple:            fmt.Sprintf("%s%s", prefix, tableTupleDefault),
-		tableNamespace:        fmt.Sprintf("%s%s", prefix, tableNamespaceDefault),
-		tableMetadata:         fmt.Sprintf("%s%s", prefix, tableMetadataDefault),
+		tableMigrationVersion: prefix + tableMigrationVersion,
+		tableTransaction:      prefix + tableTransactionDefault,
+		tableTuple:            prefix + tableTupleDefault,
+		tableNamespace:        prefix + tableNamespaceDefault,
+		tableMetadata:         prefix + tableMetadataDefault,
+		tableCaveat:           prefix + tableCaveatDefault,
 	}
 }
 
@@ -49,4 +50,8 @@ func (tn *tables) Namespace() string {
 
 func (tn *tables) Metadata() string {
 	return tn.tableMetadata
+}
+
+func (tn *tables) Caveat() string {
+	return tn.tableCaveat
 }

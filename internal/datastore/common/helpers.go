@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"google.golang.org/protobuf/types/known/structpb"
+
 	"github.com/authzed/spicedb/pkg/datastore"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	"github.com/authzed/spicedb/pkg/tuple"
@@ -24,8 +26,8 @@ func WriteTuples(ctx context.Context, ds datastore.Datastore, op core.RelationTu
 
 // UpdateTuplesInDatastore is a convenience method to perform multiple relation update operations on a Datastore
 func UpdateTuplesInDatastore(ctx context.Context, ds datastore.Datastore, updates ...*core.RelationTupleUpdate) (datastore.Revision, error) {
-	return ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
-		return rwt.WriteRelationships(updates)
+	return ds.ReadWriteTx(ctx, func(rwt datastore.ReadWriteTransaction) error {
+		return rwt.WriteRelationships(ctx, updates)
 	})
 }
 
@@ -42,11 +44,28 @@ type CreateRelationshipExistsError struct {
 func NewCreateRelationshipExistsError(relationship *core.RelationTuple) error {
 	msg := "could not CREATE one or more relationships, as they already existed. If this is persistent, please switch to TOUCH operations or specify a precondition"
 	if relationship != nil {
-		msg = fmt.Sprintf("could not CREATE relationship `%s`, as it already existed. If this is persistent, please switch to TOUCH operations or specify a precondition", tuple.String(relationship))
+		msg = fmt.Sprintf("could not CREATE relationship `%s`, as it already existed. If this is persistent, please switch to TOUCH operations or specify a precondition", tuple.StringWithoutCaveat(relationship))
 	}
 
 	return CreateRelationshipExistsError{
 		fmt.Errorf(msg),
 		relationship,
 	}
+}
+
+// ContextualizedCaveatFrom convenience method that handles creation of a contextualized caveat
+// given the possibility of arguments with zero-values.
+func ContextualizedCaveatFrom(name string, context map[string]any) (*core.ContextualizedCaveat, error) {
+	var caveat *core.ContextualizedCaveat
+	if name != "" {
+		strct, err := structpb.NewStruct(context)
+		if err != nil {
+			return nil, fmt.Errorf("malformed caveat context: %w", err)
+		}
+		caveat = &core.ContextualizedCaveat{
+			CaveatName: name,
+			Context:    strct,
+		}
+	}
+	return caveat, nil
 }

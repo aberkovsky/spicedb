@@ -5,12 +5,12 @@ import (
 	"fmt"
 
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 
 	"github.com/authzed/spicedb/internal/dispatch/graph"
 	"github.com/authzed/spicedb/internal/gateway"
+	log "github.com/authzed/spicedb/internal/logging"
 	consistencymw "github.com/authzed/spicedb/internal/middleware/consistency"
 	dispatchmw "github.com/authzed/spicedb/internal/middleware/dispatcher"
 	"github.com/authzed/spicedb/internal/middleware/pertoken"
@@ -19,7 +19,6 @@ import (
 	"github.com/authzed/spicedb/internal/services"
 	"github.com/authzed/spicedb/internal/services/health"
 	v1svc "github.com/authzed/spicedb/internal/services/v1"
-	v1alpha1svc "github.com/authzed/spicedb/internal/services/v1alpha1"
 	"github.com/authzed/spicedb/pkg/cmd/util"
 )
 
@@ -60,9 +59,9 @@ func (c *Config) Complete() (RunnableTestServer, error) {
 			srv,
 			healthManager,
 			dispatcher,
-			v1alpha1svc.PrefixNotRequired,
 			services.V1SchemaServiceEnabled,
 			services.WatchServiceEnabled,
+			services.CaveatsEnabled,
 			v1svc.PermissionsServerConfig{
 				MaxPreconditionsCount: c.MaximumPreconditionCount,
 				MaxUpdatesPerWrite:    c.MaximumUpdatesPerWrite,
@@ -182,7 +181,7 @@ func (c *completedTestServer) Run(ctx context.Context) error {
 	g.Go(stopOnCancel(c.readOnlyGatewayServer.Close))
 
 	if err := g.Wait(); err != nil {
-		log.Warn().Err(err).Msg("error shutting down servers")
+		log.Ctx(ctx).Warn().Err(err).Msg("error shutting down servers")
 	}
 
 	return nil

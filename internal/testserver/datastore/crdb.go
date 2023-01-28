@@ -1,3 +1,6 @@
+//go:build docker
+// +build docker
+
 package datastore
 
 import (
@@ -16,7 +19,11 @@ import (
 	"github.com/authzed/spicedb/pkg/secrets"
 )
 
-const enableRangefeeds = `SET CLUSTER SETTING kv.rangefeed.enabled = true;`
+const (
+	CRDBTestVersionTag = "v22.2.0"
+
+	enableRangefeeds = `SET CLUSTER SETTING kv.rangefeed.enabled = true;`
+)
 
 type crdbTester struct {
 	conn     *pgx.Conn
@@ -34,7 +41,7 @@ func RunCRDBForTesting(t testing.TB, bridgeNetworkName string) RunningEngineForT
 	resource, err := pool.RunWithOptions(&dockertest.RunOptions{
 		Name:       name,
 		Repository: "cockroachdb/cockroach",
-		Tag:        "v21.1.3",
+		Tag:        CRDBTestVersionTag,
 		Cmd:        []string{"start-single-node", "--insecure", "--max-offset=50ms"},
 		NetworkID:  bridgeNetworkName,
 	})
@@ -59,12 +66,14 @@ func RunCRDBForTesting(t testing.TB, bridgeNetworkName string) RunningEngineForT
 	uri := fmt.Sprintf("postgres://%s@localhost:%s/defaultdb?sslmode=disable", builder.creds, port)
 	require.NoError(t, pool.Retry(func() error {
 		var err error
-		builder.conn, err = pgx.Connect(context.Background(), uri)
+		ctx, cancelConnect := context.WithTimeout(context.Background(), dockerBootTimeout)
+		defer cancelConnect()
+		builder.conn, err = pgx.Connect(ctx, uri)
 		if err != nil {
 			return err
 		}
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		ctx, cancelRangeFeeds := context.WithTimeout(context.Background(), dockerBootTimeout)
+		defer cancelRangeFeeds()
 		_, err = builder.conn.Exec(ctx, enableRangefeeds)
 		return err
 	}))

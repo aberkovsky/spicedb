@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/rs/zerolog/log"
 	"github.com/shopspring/decimal"
 	"go.opentelemetry.io/otel"
 
@@ -21,7 +20,10 @@ import (
 	"github.com/authzed/spicedb/internal/datastore/common/revisions"
 	"github.com/authzed/spicedb/internal/datastore/crdb/migrations"
 	pgxcommon "github.com/authzed/spicedb/internal/datastore/postgres/common"
+	"github.com/authzed/spicedb/internal/datastore/proxy"
+	log "github.com/authzed/spicedb/internal/logging"
 	"github.com/authzed/spicedb/pkg/datastore"
+	"github.com/authzed/spicedb/pkg/datastore/revision"
 )
 
 func init() {
@@ -41,30 +43,32 @@ const (
 	tableNamespace    = "namespace_config"
 	tableTuple        = "relation_tuple"
 	tableTransactions = "transactions"
+	tableCaveat       = "caveat"
 
-	colNamespace        = "namespace"
-	colConfig           = "serialized_config"
-	colTimestamp        = "timestamp"
-	colTransactionKey   = "key"
-	colObjectID         = "object_id"
-	colRelation         = "relation"
-	colUsersetNamespace = "userset_namespace"
-	colUsersetObjectID  = "userset_object_id"
-	colUsersetRelation  = "userset_relation"
+	colNamespace         = "namespace"
+	colConfig            = "serialized_config"
+	colTimestamp         = "timestamp"
+	colTransactionKey    = "key"
+	colObjectID          = "object_id"
+	colRelation          = "relation"
+	colUsersetNamespace  = "userset_namespace"
+	colUsersetObjectID   = "userset_object_id"
+	colUsersetRelation   = "userset_relation"
+	colCaveatName        = "name"
+	colCaveatDefinition  = "definition"
+	colCaveatContextName = "caveat_name"
+	colCaveatContext     = "caveat_context"
 
 	errUnableToInstantiate = "unable to instantiate datastore: %w"
 	errRevision            = "unable to find revision: %w"
 
-	querySelectNow          = "SELECT cluster_logical_timestamp()"
-	queryShowZoneConfig     = "SHOW ZONE CONFIGURATION FOR RANGE default;"
-	querySetTransactionTime = "SET TRANSACTION AS OF SYSTEM TIME %s"
+	querySelectNow      = "SELECT cluster_logical_timestamp()"
+	queryShowZoneConfig = "SHOW ZONE CONFIGURATION FOR RANGE default;"
 
 	livingTupleConstraint = "pk_relation_tuple"
 )
 
-// NewCRDBDatastore initializes a SpiceDB datastore that uses a CockroachDB
-// database while leveraging its AOST functionality.
-func NewCRDBDatastore(url string, options ...Option) (datastore.Datastore, error) {
+func newCRDBDatastore(url string, options ...Option) (datastore.Datastore, error) {
 	config, err := generateConfig(options)
 	if err != nil {
 		return nil, fmt.Errorf(errUnableToInstantiate, err)
@@ -77,9 +81,23 @@ func NewCRDBDatastore(url string, options ...Option) (datastore.Datastore, error
 
 	configurePool(config, poolConfig)
 
-	pool, err := pgxpool.ConnectConfig(context.Background(), poolConfig)
+	initCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.ConnectConfig(initCtx, poolConfig)
 	if err != nil {
 		return nil, fmt.Errorf(errUnableToInstantiate, err)
+	}
+
+	var version crdbVersion
+	if err := queryServerVersion(initCtx, pool, &version); err != nil {
+		return nil, fmt.Errorf(errUnableToInstantiate, err)
+	}
+
+	changefeedQuery := queryChangefeed
+	if version.Major < 22 {
+		log.Info().Object("version", version).Msg("using changefeed query for CRDB version < 22")
+		changefeedQuery = queryChangefeedPreV22
 	}
 
 	if config.enablePrometheusStats {
@@ -92,7 +110,7 @@ func NewCRDBDatastore(url string, options ...Option) (datastore.Datastore, error
 		}
 	}
 
-	clusterTTLNanos, err := readClusterTTLNanos(pool)
+	clusterTTLNanos, err := readClusterTTLNanos(initCtx, pool)
 	if err != nil {
 		return nil, fmt.Errorf(errUnableToInstantiate, err)
 	}
@@ -136,6 +154,7 @@ func NewCRDBDatastore(url string, options ...Option) (datastore.Datastore, error
 			config.followerReadDelay,
 			config.revisionQuantization,
 		),
+		revision.DecimalDecoder{},
 		url,
 		pool,
 		config.watchBufferLength,
@@ -143,11 +162,22 @@ func NewCRDBDatastore(url string, options ...Option) (datastore.Datastore, error
 		config.splitAtUsersetCount,
 		executeWithMaxRetries(config.maxRetries),
 		config.disableStats,
+		changefeedQuery,
 	}
 
-	ds.RemoteClockRevisions.SetNowFunc(ds.HeadRevision)
+	ds.RemoteClockRevisions.SetNowFunc(ds.headRevisionInternal)
 
 	return ds, nil
+}
+
+// NewCRDBDatastore initializes a SpiceDB datastore that uses a CockroachDB
+// database while leveraging its AOST functionality.
+func NewCRDBDatastore(url string, options ...Option) (datastore.Datastore, error) {
+	ds, err := newCRDBDatastore(url, options...)
+	if err != nil {
+		return nil, err
+	}
+	return proxy.NewSeparatingContextDatastoreProxy(ds), nil
 }
 
 func configurePool(config crdbOptions, pgxConfig *pgxpool.Config) {
@@ -157,6 +187,10 @@ func configurePool(config crdbOptions, pgxConfig *pgxpool.Config) {
 
 	if config.minOpenConns != nil {
 		pgxConfig.MinConns = int32(*config.minOpenConns)
+	}
+
+	if pgxConfig.MaxConns > 0 && pgxConfig.MinConns > 0 && pgxConfig.MaxConns < pgxConfig.MinConns {
+		log.Warn().Int32("max-connections", pgxConfig.MaxConns).Int32("min-connections", pgxConfig.MinConns).Msg("maximum number of connections configured is less than minimum number of connections; minimum will be used")
 	}
 
 	if config.connMaxIdleTime != nil {
@@ -176,6 +210,7 @@ func configurePool(config crdbOptions, pgxConfig *pgxpool.Config) {
 
 type crdbDatastore struct {
 	*revisions.RemoteClockRevisions
+	revision.DecimalDecoder
 
 	dburl             string
 	pool              *pgxpool.Pool
@@ -184,6 +219,8 @@ type crdbDatastore struct {
 	usersetBatchSize  uint16
 	execute           executeTxRetryFunc
 	disableStats      bool
+
+	beginChangefeedQuery string
 }
 
 func (cds *crdbDatastore) SnapshotReader(rev datastore.Revision) datastore.Reader {
@@ -199,10 +236,10 @@ func (cds *crdbDatastore) SnapshotReader(rev datastore.Revision) datastore.Reade
 			}
 		}
 
-		setTxTime := fmt.Sprintf(querySetTransactionTime, rev)
+		setTxTime := "SET TRANSACTION AS OF SYSTEM TIME " + rev.String()
 		if _, err := tx.Exec(ctx, setTxTime); err != nil {
 			if err := tx.Rollback(ctx); err != nil {
-				log.Warn().Err(err).Msg(
+				log.Ctx(ctx).Warn().Err(err).Msg(
 					"error rolling back transaction after failing to set transaction time",
 				)
 			}
@@ -226,7 +263,7 @@ func (cds *crdbDatastore) ReadWriteTx(
 	ctx context.Context,
 	f datastore.TxUserFunc,
 ) (datastore.Revision, error) {
-	var commitTimestamp datastore.Revision
+	var commitTimestamp revision.Decimal
 	if err := cds.execute(ctx, func(ctx context.Context) error {
 		return cds.pool.BeginTxFunc(ctx, pgx.TxOptions{}, func(tx pgx.Tx) error {
 			longLivedTx := func(context.Context) (pgx.Tx, common.TxCleanupFunc, error) {
@@ -246,12 +283,11 @@ func (cds *crdbDatastore) ReadWriteTx(
 					make(keySet),
 					executeOnce,
 				},
-				ctx,
 				tx,
 				0,
 			}
 
-			if err := f(ctx, rwt); err != nil {
+			if err := f(rwt); err != nil {
 				return err
 			}
 
@@ -313,16 +349,17 @@ func (cds *crdbDatastore) Close() error {
 }
 
 func (cds *crdbDatastore) HeadRevision(ctx context.Context) (datastore.Revision, error) {
-	ctx, span := tracer.Start(datastore.SeparateContextWithTracing(ctx), "HeadRevision")
-	defer span.End()
+	return cds.headRevisionInternal(ctx)
+}
 
-	var hlcNow datastore.Revision
+func (cds *crdbDatastore) headRevisionInternal(ctx context.Context) (revision.Decimal, error) {
+	var hlcNow revision.Decimal
 	err := cds.execute(ctx, func(ctx context.Context) error {
 		return cds.pool.BeginTxFunc(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 			var fnErr error
 			hlcNow, fnErr = readCRDBNow(ctx, tx)
 			if fnErr != nil {
-				hlcNow = datastore.NoRevision
+				hlcNow = revision.NoRevision
 				return fmt.Errorf(errRevision, fnErr)
 			}
 			return nil
@@ -345,7 +382,7 @@ func (cds *crdbDatastore) Features(ctx context.Context) (*datastore.Features, er
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	time.AfterFunc(1*time.Second, cancel)
-	_, err = cds.pool.Exec(streamCtx, fmt.Sprintf(queryChangefeed, tableTuple, head))
+	_, err = cds.pool.Exec(streamCtx, fmt.Sprintf(cds.beginChangefeedQuery, tableTuple, head))
 	if err != nil && errors.Is(err, context.Canceled) {
 		features.Watch.Enabled = true
 		features.Watch.Reason = ""
@@ -358,25 +395,22 @@ func (cds *crdbDatastore) Features(ctx context.Context) (*datastore.Features, er
 	return &features, nil
 }
 
-func readCRDBNow(ctx context.Context, tx pgx.Tx) (decimal.Decimal, error) {
+func readCRDBNow(ctx context.Context, tx pgx.Tx) (revision.Decimal, error) {
 	ctx, span := tracer.Start(ctx, "readCRDBNow")
 	defer span.End()
 
 	var hlcNow decimal.Decimal
-	if err := tx.QueryRow(
-		datastore.SeparateContextWithTracing(ctx),
-		querySelectNow,
-	).Scan(&hlcNow); err != nil {
-		return decimal.Decimal{}, fmt.Errorf("unable to read timestamp: %w", err)
+	if err := tx.QueryRow(ctx, querySelectNow).Scan(&hlcNow); err != nil {
+		return revision.NoRevision, fmt.Errorf("unable to read timestamp: %w", err)
 	}
 
-	return hlcNow, nil
+	return revision.NewFromDecimal(hlcNow), nil
 }
 
-func readClusterTTLNanos(conn *pgxpool.Pool) (int64, error) {
+func readClusterTTLNanos(ctx context.Context, conn *pgxpool.Pool) (int64, error) {
 	var target, configSQL string
 	if err := conn.
-		QueryRow(context.Background(), queryShowZoneConfig).
+		QueryRow(ctx, queryShowZoneConfig).
 		Scan(&target, &configSQL); err != nil {
 		return 0, err
 	}
@@ -394,6 +428,6 @@ func readClusterTTLNanos(conn *pgxpool.Pool) (int64, error) {
 	return gcSeconds * 1_000_000_000, nil
 }
 
-func revisionFromTimestamp(t time.Time) datastore.Revision {
-	return decimal.NewFromInt(t.UnixNano())
+func revisionFromTimestamp(t time.Time) revision.Decimal {
+	return revision.NewFromDecimal(decimal.NewFromInt(t.UnixNano()))
 }

@@ -6,20 +6,38 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/rs/zerolog/log"
-	"github.com/shopspring/decimal"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/authzed/spicedb/internal/dispatch"
+	log "github.com/authzed/spicedb/internal/logging"
 	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/internal/namespace"
-	"github.com/authzed/spicedb/internal/util"
 	"github.com/authzed/spicedb/pkg/datastore"
 	nspkg "github.com/authzed/spicedb/pkg/namespace"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	v1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
 	iv1 "github.com/authzed/spicedb/pkg/proto/impl/v1"
+	"github.com/authzed/spicedb/pkg/spiceerrors"
 	"github.com/authzed/spicedb/pkg/tuple"
+	"github.com/authzed/spicedb/pkg/util"
 )
+
+var dispatchChunkCountHistogram = prometheus.NewHistogram(prometheus.HistogramOpts{
+	Name:    "spicedb_check_dispatch_chunk_count",
+	Help:    "number of chunks when dispatching in check",
+	Buckets: []float64{1, 2, 3, 5, 10, 25, 100, 250},
+})
+
+var directDispatchQueryHistogram = prometheus.NewHistogram(prometheus.HistogramOpts{
+	Name:    "spicedb_check_direct_dispatch_query_count",
+	Help:    "number of queries made per direct dispatch",
+	Buckets: []float64{1, 2},
+})
+
+func init() {
+	prometheus.MustRegister(directDispatchQueryHistogram)
+	prometheus.MustRegister(dispatchChunkCountHistogram)
+}
 
 // NewConcurrentChecker creates an instance of ConcurrentChecker.
 func NewConcurrentChecker(d dispatch.Check, concurrencyLimit uint16) *ConcurrentChecker {
@@ -37,7 +55,7 @@ type ConcurrentChecker struct {
 // consumption.
 type ValidatedCheckRequest struct {
 	*v1.DispatchCheckRequest
-	Revision decimal.Decimal
+	Revision datastore.Revision
 }
 
 // currentRequestContext holds context information for the current request being
@@ -61,13 +79,16 @@ type currentRequestContext struct {
 	// resultsSetting is the results setting to use for this request and all subsequent
 	// requests.
 	resultsSetting v1.DispatchCheckRequest_ResultsSetting
+
+	// maxDispatchCount is the maximum number of resource IDs that can be specified in each dispatch.
+	maxDispatchCount uint16
 }
 
 // Check performs a check request with the provided request and context
 func (cc *ConcurrentChecker) Check(ctx context.Context, req ValidatedCheckRequest, relation *core.Relation) (*v1.DispatchCheckResponse, error) {
 	resolved := cc.checkInternal(ctx, req, relation)
 	resolved.Resp.Metadata = addCallToResponseMetadata(resolved.Resp.Metadata)
-	if req.Debug != v1.DispatchCheckRequest_ENABLE_DEBUGGING {
+	if req.Debug == v1.DispatchCheckRequest_NO_DEBUG {
 		return resolved.Resp, resolved.Err
 	}
 
@@ -88,15 +109,10 @@ func (cc *ConcurrentChecker) Check(ctx context.Context, req ValidatedCheckReques
 	}
 
 	// Build the results for the debug trace.
-	results := make(map[string]*v1.CheckDebugTrace_ResourceCheckResult, len(req.DispatchCheckRequest.ResourceIds))
+	results := make(map[string]*v1.ResourceCheckResult, len(req.DispatchCheckRequest.ResourceIds))
 	for _, resourceID := range req.DispatchCheckRequest.ResourceIds {
-		hasPermission := false
-		if found, ok := resolved.Resp.ResultsByResourceId[resourceID]; ok && found.Membership == v1.DispatchCheckResponse_MEMBER {
-			hasPermission = true
-		}
-
-		results[resourceID] = &v1.CheckDebugTrace_ResourceCheckResult{
-			HasPermission: hasPermission,
+		if found, ok := resolved.Resp.ResultsByResourceId[resourceID]; ok {
+			results[resourceID] = found
 		}
 	}
 
@@ -134,9 +150,9 @@ func (cc *ConcurrentChecker) checkInternal(ctx context.Context, req ValidatedChe
 	//
 	// If the filtering results in no further resource IDs to check, or a result is found and a single
 	// result is allowed, we terminate early.
-	foundResourceIds, filteredResourcesIds := filterForFoundMemberResource(req.ResourceRelation, req.ResourceIds, req.Subject)
-	if len(foundResourceIds) > 0 && req.DispatchCheckRequest.ResultsSetting == v1.DispatchCheckRequest_ALLOW_SINGLE_RESULT {
-		return checkResultsForResourceIds(foundResourceIds, emptyMetadata)
+	membershipSet, filteredResourcesIds := filterForFoundMemberResource(req.ResourceRelation, req.ResourceIds, req.Subject)
+	if membershipSet.HasDeterminedMember() && req.DispatchCheckRequest.ResultsSetting == v1.DispatchCheckRequest_ALLOW_SINGLE_RESULT {
+		return checkResultsForMembership(membershipSet, emptyMetadata)
 	}
 
 	if len(filteredResourcesIds) == 0 {
@@ -154,13 +170,18 @@ func (cc *ConcurrentChecker) checkInternal(ctx context.Context, req ValidatedChe
 		parentReq:           req,
 		filteredResourceIDs: filteredResourcesIds,
 		resultsSetting:      resultsSetting,
+		maxDispatchCount:    maxDispatchChunkSize,
+	}
+
+	if req.Debug == v1.DispatchCheckRequest_ENABLE_TRACE_DEBUGGING {
+		crc.maxDispatchCount = 1
 	}
 
 	if relation.UsersetRewrite == nil {
-		return combineResultWithFoundResourceIds(cc.checkDirect(ctx, crc), foundResourceIds)
+		return combineResultWithFoundResources(cc.checkDirect(ctx, crc, relation), membershipSet)
 	}
 
-	return combineResultWithFoundResourceIds(cc.checkUsersetRewrite(ctx, crc, relation.UsersetRewrite), foundResourceIds)
+	return combineResultWithFoundResources(cc.checkUsersetRewrite(ctx, crc, relation.UsersetRewrite), membershipSet)
 }
 
 func onrEqual(lhs, rhs *core.ObjectAndRelation) bool {
@@ -177,54 +198,181 @@ type directDispatch struct {
 	resourceIds  []string
 }
 
-func (cc *ConcurrentChecker) checkDirect(ctx context.Context, crc currentRequestContext) CheckResult {
+func (cc *ConcurrentChecker) checkDirect(ctx context.Context, crc currentRequestContext, relation *core.Relation) CheckResult {
 	log.Ctx(ctx).Trace().Object("direct", crc.parentReq).Send()
 	ds := datastoremw.MustFromContext(ctx).SnapshotReader(crc.parentReq.Revision)
 
-	// TODO(jschorr): Use type information to further optimize this query.
-	it, err := ds.QueryRelationships(ctx, datastore.RelationshipsFilter{
+	// Build a filter for finding the direct relationships for the check. There are three
+	// classes of relationships to be found:
+	// 1) the target subject itself, if allowed on this relation
+	// 2) the wildcard form of the target subject, if a wildcard is allowed on this relation
+	// 3) Otherwise, any non-terminal (non-`...`) subjects, if allowed on this relation, to be
+	//    redispatched outward
+	hasNonTerminals := false
+	hasDirectSubject := false
+	hasWildcardSubject := false
+
+	for _, allowedDirectRelation := range relation.GetTypeInformation().GetAllowedDirectRelations() {
+		// If the namespace of the allowed direct relation matches the subject type, there are two
+		// cases to optimize:
+		// 1) Finding the target subject itself, as a direct lookup
+		// 2) Finding a wildcard for the subject type+relation
+		if allowedDirectRelation.GetNamespace() == crc.parentReq.Subject.Namespace {
+			if allowedDirectRelation.GetPublicWildcard() != nil {
+				hasWildcardSubject = true
+			} else if allowedDirectRelation.GetRelation() == crc.parentReq.Subject.Relation {
+				hasDirectSubject = true
+			}
+		}
+
+		// If the relation found is not an ellipsis, then this is a nested relation that
+		// might need to be followed, so indicate that such relationships should be returned
+		//
+		// TODO(jschorr): Use type information to *further* optimize this query around which nested
+		// relations can reach the target subject type.
+		if allowedDirectRelation.GetRelation() != tuple.Ellipsis {
+			hasNonTerminals = true
+		}
+	}
+
+	foundResources := NewMembershipSet()
+
+	// If the direct subject or a wildcard form can be found, issue a query for just that
+	// subject.
+	var queryCount float64
+	defer func() {
+		directDispatchQueryHistogram.Observe(queryCount)
+	}()
+
+	if hasDirectSubject || hasWildcardSubject {
+		subjectSelectors := []datastore.SubjectsSelector{}
+
+		if hasDirectSubject {
+			subjectSelectors = append(subjectSelectors, datastore.SubjectsSelector{
+				OptionalSubjectType: crc.parentReq.Subject.Namespace,
+				OptionalSubjectIds:  []string{crc.parentReq.Subject.ObjectId},
+				RelationFilter:      datastore.SubjectRelationFilter{}.WithRelation(crc.parentReq.Subject.Relation),
+			})
+		}
+
+		if hasWildcardSubject {
+			subjectSelectors = append(subjectSelectors, datastore.SubjectsSelector{
+				OptionalSubjectType: crc.parentReq.Subject.Namespace,
+				OptionalSubjectIds:  []string{tuple.PublicWildcard},
+				RelationFilter:      datastore.SubjectRelationFilter{}.WithEllipsisRelation(),
+			})
+		}
+
+		filter := datastore.RelationshipsFilter{
+			ResourceType:              crc.parentReq.ResourceRelation.Namespace,
+			OptionalResourceIds:       crc.filteredResourceIDs,
+			OptionalResourceRelation:  crc.parentReq.ResourceRelation.Relation,
+			OptionalSubjectsSelectors: subjectSelectors,
+		}
+
+		it, err := ds.QueryRelationships(ctx, filter)
+		if err != nil {
+			return checkResultError(NewCheckFailureErr(err), emptyMetadata)
+		}
+		defer it.Close()
+		queryCount += 1.0
+
+		// Find the matching subject(s).
+		for tpl := it.Next(); tpl != nil; tpl = it.Next() {
+			if it.Err() != nil {
+				return checkResultError(NewCheckFailureErr(it.Err()), emptyMetadata)
+			}
+
+			// If the subject of the relationship matches the target subject, then we've found
+			// a result.
+			if !onrEqualOrWildcard(tpl.Subject, crc.parentReq.Subject) {
+				tplString, err := tuple.String(tpl)
+				if err != nil {
+					return checkResultError(err, emptyMetadata)
+				}
+
+				return checkResultError(
+					NewCheckFailureErr(
+						fmt.Errorf("somehow got invalid ONR for direct check matching: %s vs %s", tuple.StringONR(crc.parentReq.Subject), tplString),
+					),
+					emptyMetadata,
+				)
+			}
+
+			foundResources.AddDirectMember(tpl.ResourceAndRelation.ObjectId, tpl.Caveat)
+			if crc.resultsSetting == v1.DispatchCheckRequest_ALLOW_SINGLE_RESULT && foundResources.HasDeterminedMember() {
+				return checkResultsForMembership(foundResources, emptyMetadata)
+			}
+		}
+		it.Close()
+	}
+
+	// Filter down the resource IDs for further dispatch based on whether they exist as found
+	// subjects in the existing membership set.
+	furtherFilteredResourceIDs := make([]string, 0, len(crc.filteredResourceIDs)-foundResources.Size())
+	for _, resourceID := range crc.filteredResourceIDs {
+		if foundResources.HasConcreteResourceID(resourceID) {
+			continue
+		}
+
+		furtherFilteredResourceIDs = append(furtherFilteredResourceIDs, resourceID)
+	}
+
+	// If there are no possible non-terminals, then the check is completed.
+	if !hasNonTerminals || len(furtherFilteredResourceIDs) == 0 {
+		return checkResultsForMembership(foundResources, emptyMetadata)
+	}
+
+	// Otherwise, for any remaining resource IDs, query for redispatch.
+	filter := datastore.RelationshipsFilter{
 		ResourceType:             crc.parentReq.ResourceRelation.Namespace,
-		OptionalResourceIds:      crc.filteredResourceIDs,
+		OptionalResourceIds:      furtherFilteredResourceIDs,
 		OptionalResourceRelation: crc.parentReq.ResourceRelation.Relation,
-	})
+		OptionalSubjectsSelectors: []datastore.SubjectsSelector{
+			{
+				RelationFilter: datastore.SubjectRelationFilter{}.WithOnlyNonEllipsisRelations(),
+			},
+		},
+	}
+
+	it, err := ds.QueryRelationships(ctx, filter)
 	if err != nil {
 		return checkResultError(NewCheckFailureErr(err), emptyMetadata)
 	}
 	defer it.Close()
+	queryCount += 1.0
 
 	// Find the subjects over which to dispatch.
-	foundResourceIds := []string{}
 	subjectsToDispatch := tuple.NewONRByTypeSet()
-	resourceIDsBySubjectID := util.NewMultiMap[string, string]()
+	relationshipsBySubjectONR := util.NewMultiMap[string, *core.RelationTuple]()
 
 	for tpl := it.Next(); tpl != nil; tpl = it.Next() {
 		if it.Err() != nil {
 			return checkResultError(NewCheckFailureErr(it.Err()), emptyMetadata)
 		}
 
-		if onrEqualOrWildcard(tpl.Subject, crc.parentReq.Subject) {
-			foundResourceIds = append(foundResourceIds, tpl.ResourceAndRelation.ObjectId)
-			if crc.resultsSetting == v1.DispatchCheckRequest_ALLOW_SINGLE_RESULT {
-				return checkResultsForResourceIds(foundResourceIds, emptyMetadata)
-			}
-			continue
+		// Add the subject as an object over which to dispatch.
+		if tpl.Subject.Relation == Ellipsis {
+			return checkResultError(NewCheckFailureErr(fmt.Errorf("got a terminal for a non-terminal query")), emptyMetadata)
 		}
 
-		if tpl.Subject.Relation != Ellipsis {
-			subjectsToDispatch.Add(tpl.Subject)
-			resourceIDsBySubjectID.Add(tuple.StringONR(tpl.Subject), tpl.ResourceAndRelation.ObjectId)
-		}
+		subjectsToDispatch.Add(tpl.Subject)
+		relationshipsBySubjectONR.Add(tuple.StringONR(tpl.Subject), tpl)
 	}
+	it.Close()
 
 	// Convert the subjects into batched requests.
 	toDispatch := make([]directDispatch, 0, subjectsToDispatch.Len())
 	subjectsToDispatch.ForEachType(func(rr *core.RelationReference, resourceIds []string) {
-		util.ForEachChunk(resourceIds, maxDispatchChunkSize, func(resourceIdChunk []string) {
+		chunkCount := 0.0
+		util.ForEachChunk(resourceIds, crc.maxDispatchCount, func(resourceIdChunk []string) {
+			chunkCount++
 			toDispatch = append(toDispatch, directDispatch{
 				resourceType: rr,
 				resourceIds:  resourceIdChunk,
 			})
 		})
+		dispatchChunkCountHistogram.Observe(chunkCount)
 	})
 
 	// Dispatch and map to the associated resource ID(s).
@@ -245,33 +393,33 @@ func (cc *ConcurrentChecker) checkDirect(ctx context.Context, crc currentRequest
 			return childResult
 		}
 
-		return mapResourceIds(childResult, dd.resourceType, resourceIDsBySubjectID)
+		return mapFoundResources(childResult, dd.resourceType, relationshipsBySubjectONR)
 	}, cc.concurrencyLimit)
 
-	return combineResultWithFoundResourceIds(result, foundResourceIds)
+	return combineResultWithFoundResources(result, foundResources)
 }
 
-func mapResourceIds(result CheckResult, resourceType *core.RelationReference, resourceIDsBySubjectID *util.MultiMap[string, string]) CheckResult {
+func mapFoundResources(result CheckResult, resourceType *core.RelationReference, relationshipsBySubjectONR *util.MultiMap[string, *core.RelationTuple]) CheckResult {
 	// Map any resources found to the parent resource IDs.
-	mappedResourceIds := []string{}
+	membershipSet := NewMembershipSet()
 	for foundResourceID, result := range result.Resp.ResultsByResourceId {
-		if result.Membership != v1.DispatchCheckResponse_MEMBER {
-			continue
+		subjectKey := tuple.StringONR(&core.ObjectAndRelation{
+			Namespace: resourceType.Namespace,
+			ObjectId:  foundResourceID,
+			Relation:  resourceType.Relation,
+		})
+
+		tuples, _ := relationshipsBySubjectONR.Get(subjectKey)
+		for _, relationTuple := range tuples {
+			membershipSet.AddMemberViaRelationship(relationTuple.ResourceAndRelation.ObjectId, result.Expression, relationTuple)
 		}
-
-		mappedResourceIds = append(mappedResourceIds,
-			resourceIDsBySubjectID.Get(tuple.StringONR(&core.ObjectAndRelation{
-				Namespace: resourceType.Namespace,
-				ObjectId:  foundResourceID,
-				Relation:  resourceType.Relation,
-			}))...)
 	}
 
-	if len(mappedResourceIds) == 0 {
-		return noMembers()
+	if membershipSet.IsEmpty() {
+		return noMembersWithMetadata(result.Resp.Metadata)
 	}
 
-	return checkResultsForResourceIds(mappedResourceIds, result.Resp.Metadata)
+	return checkResultsForMembership(membershipSet, result.Resp.Metadata)
 }
 
 func (cc *ConcurrentChecker) checkUsersetRewrite(ctx context.Context, crc currentRequestContext, rewrite *core.UsersetRewrite) CheckResult {
@@ -315,14 +463,14 @@ func (cc *ConcurrentChecker) checkComputedUserset(ctx context.Context, crc curre
 	var targetResourceIds []string
 	if cu.Object == core.ComputedUserset_TUPLE_USERSET_OBJECT {
 		if rr == nil || len(resourceIds) == 0 {
-			panic("computed userset for tupleset without tuples")
+			return checkResultError(spiceerrors.MustBugf("computed userset for tupleset without tuples"), emptyMetadata)
 		}
 
 		startNamespace = rr.Namespace
 		targetResourceIds = resourceIds
 	} else if cu.Object == core.ComputedUserset_TUPLE_OBJECT {
 		if rr != nil {
-			panic("computed userset for tupleset with wrong object type")
+			return checkResultError(spiceerrors.MustBugf("computed userset for tupleset with wrong object type"), emptyMetadata)
 		}
 
 		startNamespace = crc.parentReq.ResourceRelation.Namespace
@@ -335,9 +483,9 @@ func (cc *ConcurrentChecker) checkComputedUserset(ctx context.Context, crc curre
 	}
 
 	// If we will be dispatching to the goal's ONR, then we know that the ONR is a member.
-	foundResourceIds, updatedTargetResourceIds := filterForFoundMemberResource(targetRR, targetResourceIds, crc.parentReq.Subject)
-	if (len(foundResourceIds) > 0 && crc.resultsSetting == v1.DispatchCheckRequest_ALLOW_SINGLE_RESULT) || len(updatedTargetResourceIds) == 0 {
-		return checkResultsForResourceIds(foundResourceIds, emptyMetadata)
+	membershipSet, updatedTargetResourceIds := filterForFoundMemberResource(targetRR, targetResourceIds, crc.parentReq.Subject)
+	if (membershipSet.HasDeterminedMember() && crc.resultsSetting == v1.DispatchCheckRequest_ALLOW_SINGLE_RESULT) || len(updatedTargetResourceIds) == 0 {
+		return checkResultsForMembership(membershipSet, emptyMetadata)
 	}
 
 	// Check if the target relation exists. If not, return nothing.
@@ -362,17 +510,19 @@ func (cc *ConcurrentChecker) checkComputedUserset(ctx context.Context, crc curre
 		},
 		crc.parentReq.Revision,
 	})
-	return combineResultWithFoundResourceIds(result, foundResourceIds)
+	return combineResultWithFoundResources(result, membershipSet)
 }
 
-func filterForFoundMemberResource(resourceRelation *core.RelationReference, resourceIds []string, subject *core.ObjectAndRelation) ([]string, []string) {
+func filterForFoundMemberResource(resourceRelation *core.RelationReference, resourceIds []string, subject *core.ObjectAndRelation) (*MembershipSet, []string) {
 	if resourceRelation.Namespace != subject.Namespace || resourceRelation.Relation != subject.Relation {
 		return nil, resourceIds
 	}
 
 	for index, resourceID := range resourceIds {
 		if subject.ObjectId == resourceID {
-			return []string{resourceID}, removeIndexFromSlice(resourceIds, index)
+			membershipSet := NewMembershipSet()
+			membershipSet.AddDirectMember(resourceID, nil)
+			return membershipSet, removeIndexFromSlice(resourceIds, index)
 		}
 	}
 
@@ -399,25 +549,29 @@ func (cc *ConcurrentChecker) checkTupleToUserset(ctx context.Context, crc curren
 	defer it.Close()
 
 	subjectsToDispatch := tuple.NewONRByTypeSet()
-	resourceIDsBySubjectID := util.NewMultiMap[string, string]()
+	relationshipsBySubjectONR := util.NewMultiMap[string, *core.RelationTuple]()
 	for tpl := it.Next(); tpl != nil; tpl = it.Next() {
 		if it.Err() != nil {
 			return checkResultError(NewCheckFailureErr(it.Err()), emptyMetadata)
 		}
 
 		subjectsToDispatch.Add(tpl.Subject)
-		resourceIDsBySubjectID.Add(tuple.StringONR(tpl.Subject), tpl.ResourceAndRelation.ObjectId)
+		relationshipsBySubjectONR.Add(tuple.StringONR(tpl.Subject), tpl)
 	}
+	it.Close()
 
 	// Convert the subjects into batched requests.
 	toDispatch := make([]directDispatch, 0, subjectsToDispatch.Len())
 	subjectsToDispatch.ForEachType(func(rr *core.RelationReference, resourceIds []string) {
-		util.ForEachChunk(resourceIds, maxDispatchChunkSize, func(resourceIdChunk []string) {
+		chunkCount := 0.0
+		util.ForEachChunk(resourceIds, crc.maxDispatchCount, func(resourceIdChunk []string) {
+			chunkCount++
 			toDispatch = append(toDispatch, directDispatch{
 				resourceType: rr,
 				resourceIds:  resourceIdChunk,
 			})
 		})
+		dispatchChunkCountHistogram.Observe(chunkCount)
 	})
 
 	return union(
@@ -430,11 +584,7 @@ func (cc *ConcurrentChecker) checkTupleToUserset(ctx context.Context, crc curren
 				return childResult
 			}
 
-			if childResult.Err != nil {
-				return childResult
-			}
-
-			return mapResourceIds(childResult, dd.resourceType, resourceIDsBySubjectID)
+			return mapFoundResources(childResult, dd.resourceType, relationshipsBySubjectONR)
 		},
 		cc.concurrencyLimit,
 	)
@@ -464,7 +614,7 @@ func union[T any](
 	}()
 
 	responseMetadata := emptyMetadata
-	responseResults := make(map[string]*v1.DispatchCheckResponse_ResourceCheckResult, len(crc.filteredResourceIDs))
+	membershipSet := NewMembershipSet()
 
 	for i := 0; i < len(children); i++ {
 		select {
@@ -475,11 +625,9 @@ func union[T any](
 				return checkResultError(result.Err, responseMetadata)
 			}
 
-			for resourceID, result := range result.Resp.ResultsByResourceId {
-				responseResults[resourceID] = result
-				if crc.resultsSetting == v1.DispatchCheckRequest_ALLOW_SINGLE_RESULT && result.Membership == v1.DispatchCheckResponse_MEMBER {
-					return checkResults(responseResults, responseMetadata)
-				}
+			membershipSet.UnionWith(result.Resp.ResultsByResourceId)
+			if membershipSet.HasDeterminedMember() && crc.resultsSetting == v1.DispatchCheckRequest_ALLOW_SINGLE_RESULT {
+				return checkResultsForMembership(membershipSet, responseMetadata)
 			}
 
 		case <-ctx.Done():
@@ -488,7 +636,7 @@ func union[T any](
 		}
 	}
 
-	return checkResults(responseResults, responseMetadata)
+	return checkResultsForMembership(membershipSet, responseMetadata)
 }
 
 // all returns whether all of the lazy checks pass, and is used for intersection.
@@ -511,6 +659,7 @@ func all[T any](
 		parentReq:           crc.parentReq,
 		filteredResourceIDs: crc.filteredResourceIDs,
 		resultsSetting:      v1.DispatchCheckRequest_REQUIRE_ALL_RESULTS,
+		maxDispatchCount:    crc.maxDispatchCount,
 	}, children, handler, resultChan, concurrencyLimit)
 
 	defer func() {
@@ -519,8 +668,7 @@ func all[T any](
 		close(resultChan)
 	}()
 
-	var foundForResourceIds *util.Set[string]
-
+	var membershipSet *MembershipSet
 	for i := 0; i < len(children); i++ {
 		select {
 		case result := <-resultChan:
@@ -529,23 +677,22 @@ func all[T any](
 				return checkResultError(result.Err, responseMetadata)
 			}
 
-			resourceIdsWithMembership := util.NewSet[string]()
-			resourceIdsWithMembership.Extend(filterToResourceIdsWithMembership(result.Resp.ResultsByResourceId))
-
-			if foundForResourceIds == nil {
-				foundForResourceIds = resourceIdsWithMembership
+			if membershipSet == nil {
+				membershipSet = NewMembershipSet()
+				membershipSet.UnionWith(result.Resp.ResultsByResourceId)
 			} else {
-				foundForResourceIds.IntersectionDifference(resourceIdsWithMembership)
-				if foundForResourceIds.IsEmpty() {
-					return noMembers()
-				}
+				membershipSet.IntersectWith(result.Resp.ResultsByResourceId)
+			}
+
+			if membershipSet.IsEmpty() {
+				return noMembersWithMetadata(responseMetadata)
 			}
 		case <-ctx.Done():
 			return checkResultError(NewRequestCanceledErr(), responseMetadata)
 		}
 	}
 
-	return checkResultsForResourceIds(foundForResourceIds.AsSlice(), responseMetadata)
+	return checkResultsForMembership(membershipSet, responseMetadata)
 }
 
 // difference returns whether the first lazy check passes and none of the supsequent checks pass.
@@ -581,6 +728,7 @@ func difference[T any](
 		parentReq:           crc.parentReq,
 		filteredResourceIDs: crc.filteredResourceIDs,
 		resultsSetting:      v1.DispatchCheckRequest_REQUIRE_ALL_RESULTS,
+		maxDispatchCount:    crc.maxDispatchCount,
 	}, children[1:], handler, othersChan, concurrencyLimit-1)
 
 	defer func() {
@@ -592,7 +740,7 @@ func difference[T any](
 	}()
 
 	responseMetadata := emptyMetadata
-	foundResourceIds := util.NewSet[string]()
+	membershipSet := NewMembershipSet()
 
 	// Wait for the base set to return.
 	select {
@@ -603,16 +751,16 @@ func difference[T any](
 			return checkResultError(base.Err, responseMetadata)
 		}
 
-		foundResourceIds.Extend(filterToResourceIdsWithMembership(base.Resp.ResultsByResourceId))
-		if foundResourceIds.IsEmpty() {
-			return noMembers()
+		membershipSet.UnionWith(base.Resp.ResultsByResourceId)
+		if membershipSet.IsEmpty() {
+			return noMembersWithMetadata(responseMetadata)
 		}
 
 	case <-ctx.Done():
 		return checkResultError(NewRequestCanceledErr(), responseMetadata)
 	}
 
-	// For the remaining sets to return.
+	// Subtract the remaining sets.
 	for i := 1; i < len(children); i++ {
 		select {
 		case sub := <-othersChan:
@@ -622,19 +770,17 @@ func difference[T any](
 				return checkResultError(sub.Err, responseMetadata)
 			}
 
-			resourceIdsWithMembership := util.NewSet[string]()
-			resourceIdsWithMembership.Extend(filterToResourceIdsWithMembership(sub.Resp.ResultsByResourceId))
-
-			foundResourceIds.RemoveAll(resourceIdsWithMembership)
-			if foundResourceIds.IsEmpty() {
-				return noMembers()
+			membershipSet.Subtract(sub.Resp.ResultsByResourceId)
+			if membershipSet.IsEmpty() {
+				return noMembersWithMetadata(responseMetadata)
 			}
+
 		case <-ctx.Done():
 			return checkResultError(NewRequestCanceledErr(), responseMetadata)
 		}
 	}
 
-	return checkResultsForResourceIds(foundResourceIds.AsSlice(), responseMetadata)
+	return checkResultsForMembership(membershipSet, responseMetadata)
 }
 
 func dispatchAllAsync[T any](
@@ -686,27 +832,20 @@ func noMembers() CheckResult {
 	}
 }
 
-func checkResultsForResourceIds(resourceIds []string, subProblemMetadata *v1.ResponseMeta) CheckResult {
-	results := make(map[string]*v1.DispatchCheckResponse_ResourceCheckResult, len(resourceIds))
-	for _, resourceID := range resourceIds {
-		results[resourceID] = &v1.DispatchCheckResponse_ResourceCheckResult{
-			Membership: v1.DispatchCheckResponse_MEMBER,
-		}
-	}
+func noMembersWithMetadata(metadata *v1.ResponseMeta) CheckResult {
 	return CheckResult{
 		&v1.DispatchCheckResponse{
-			Metadata:            ensureMetadata(subProblemMetadata),
-			ResultsByResourceId: results,
+			Metadata: metadata,
 		},
 		nil,
 	}
 }
 
-func checkResults(results map[string]*v1.DispatchCheckResponse_ResourceCheckResult, subProblemMetadata *v1.ResponseMeta) CheckResult {
+func checkResultsForMembership(foundMembership *MembershipSet, subProblemMetadata *v1.ResponseMeta) CheckResult {
 	return CheckResult{
 		&v1.DispatchCheckResponse{
 			Metadata:            ensureMetadata(subProblemMetadata),
-			ResultsByResourceId: results,
+			ResultsByResourceId: foundMembership.AsCheckResultsMap(),
 		},
 		nil,
 	}
@@ -721,40 +860,23 @@ func checkResultError(err error, subProblemMetadata *v1.ResponseMeta) CheckResul
 	}
 }
 
-func filterToResourceIdsWithMembership(results map[string]*v1.DispatchCheckResponse_ResourceCheckResult) []string {
-	members := []string{}
-	for resourceID, result := range results {
-		if result.Membership == v1.DispatchCheckResponse_MEMBER {
-			members = append(members, resourceID)
-		}
-	}
-	return members
-}
-
-func combineResultWithFoundResourceIds(result CheckResult, foundResourceIds []string) CheckResult {
+func combineResultWithFoundResources(result CheckResult, foundResources *MembershipSet) CheckResult {
 	if result.Err != nil {
 		return result
 	}
 
-	if len(foundResourceIds) == 0 {
+	if foundResources.IsEmpty() {
 		return result
 	}
 
-	for _, resourceID := range foundResourceIds {
-		if len(resourceID) == 0 {
-			panic("given empty resource id")
-		}
-
-		if result.Resp.ResultsByResourceId == nil {
-			result.Resp.ResultsByResourceId = map[string]*v1.DispatchCheckResponse_ResourceCheckResult{}
-		}
-
-		result.Resp.ResultsByResourceId[resourceID] = &v1.DispatchCheckResponse_ResourceCheckResult{
-			Membership: v1.DispatchCheckResponse_MEMBER,
-		}
+	foundResources.UnionWith(result.Resp.ResultsByResourceId)
+	return CheckResult{
+		Resp: &v1.DispatchCheckResponse{
+			ResultsByResourceId: foundResources.AsCheckResultsMap(),
+			Metadata:            result.Resp.Metadata,
+		},
+		Err: result.Err,
 	}
-
-	return result
 }
 
 func combineResponseMetadata(existing *v1.ResponseMeta, responseMetadata *v1.ResponseMeta) *v1.ResponseMeta {
@@ -764,21 +886,28 @@ func combineResponseMetadata(existing *v1.ResponseMeta, responseMetadata *v1.Res
 		CachedDispatchCount: existing.CachedDispatchCount + responseMetadata.CachedDispatchCount,
 	}
 
-	if responseMetadata.DebugInfo == nil {
+	if existing.DebugInfo == nil && responseMetadata.DebugInfo == nil {
 		return combined
 	}
 
-	debugInfo := existing.DebugInfo
-	if debugInfo == nil {
-		debugInfo = &v1.DebugInformation{
-			Check: &v1.CheckDebugTrace{},
+	debugInfo := &v1.DebugInformation{
+		Check: &v1.CheckDebugTrace{},
+	}
+
+	if existing.DebugInfo != nil {
+		if existing.DebugInfo.Check.Request != nil {
+			debugInfo.Check.SubProblems = append(debugInfo.Check.SubProblems, existing.DebugInfo.Check)
+		} else {
+			debugInfo.Check.SubProblems = append(debugInfo.Check.SubProblems, existing.DebugInfo.Check.SubProblems...)
 		}
 	}
 
-	if responseMetadata.DebugInfo.Check.Request != nil {
-		debugInfo.Check.SubProblems = append(debugInfo.Check.SubProblems, responseMetadata.DebugInfo.Check)
-	} else {
-		debugInfo.Check.SubProblems = append(debugInfo.Check.SubProblems, responseMetadata.DebugInfo.Check.SubProblems...)
+	if responseMetadata.DebugInfo != nil {
+		if responseMetadata.DebugInfo.Check.Request != nil {
+			debugInfo.Check.SubProblems = append(debugInfo.Check.SubProblems, responseMetadata.DebugInfo.Check)
+		} else {
+			debugInfo.Check.SubProblems = append(debugInfo.Check.SubProblems, responseMetadata.DebugInfo.Check.SubProblems...)
+		}
 	}
 
 	combined.DebugInfo = debugInfo

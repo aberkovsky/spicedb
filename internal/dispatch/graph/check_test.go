@@ -3,13 +3,11 @@ package graph
 import (
 	"context"
 	"fmt"
-	"os"
+	"strings"
 	"testing"
 
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
-	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
 
 	"github.com/authzed/spicedb/internal/datastore/common"
 	"github.com/authzed/spicedb/internal/datastore/memdb"
@@ -17,23 +15,28 @@ import (
 	"github.com/authzed/spicedb/internal/dispatch/caching"
 	"github.com/authzed/spicedb/internal/dispatch/keys"
 	"github.com/authzed/spicedb/internal/graph"
+	log "github.com/authzed/spicedb/internal/logging"
 	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/internal/testfixtures"
+	"github.com/authzed/spicedb/pkg/datastore"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	v1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
 	"github.com/authzed/spicedb/pkg/tuple"
+	"github.com/authzed/spicedb/pkg/util"
 )
-
-func init() {
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout})
-
-	// Set this to Trace to dump log statements in tests.
-	zerolog.SetGlobalLevel(zerolog.DebugLevel)
-}
 
 var ONR = tuple.ObjectAndRelation
 
+var goleakIgnores = []goleak.Option{
+	goleak.IgnoreTopFunction("github.com/golang/glog.(*loggingT).flushDaemon"),
+	goleak.IgnoreTopFunction("github.com/outcaste-io/ristretto.(*lfuPolicy).processItems"),
+	goleak.IgnoreTopFunction("github.com/outcaste-io/ristretto.(*Cache).processItems"),
+	goleak.IgnoreCurrent(),
+}
+
 func TestSimpleCheck(t *testing.T) {
+	defer goleak.VerifyNone(t, goleakIgnores...)
+
 	type expected struct {
 		relation string
 		isMember bool
@@ -120,7 +123,7 @@ func TestSimpleCheck(t *testing.T) {
 				t.Run(name, func(t *testing.T) {
 					require := require.New(t)
 
-					ctx, dispatch, revision := newLocalDispatcher(require)
+					ctx, dispatch, revision := newLocalDispatcher(t)
 
 					checkResult, err := dispatch.DispatchCheck(ctx, &v1.DispatchCheckRequest{
 						ResourceRelation: RR(tc.namespace, expected.relation),
@@ -137,7 +140,7 @@ func TestSimpleCheck(t *testing.T) {
 
 					isMember := false
 					if found, ok := checkResult.ResultsByResourceId[tc.objectID]; ok {
-						isMember = found.Membership == v1.DispatchCheckResponse_MEMBER
+						isMember = found.Membership == v1.ResourceCheckResult_MEMBER
 					}
 
 					require.Equal(expected.isMember, isMember, "For object %s in %v: ", tc.objectID, checkResult.ResultsByResourceId)
@@ -156,19 +159,19 @@ func TestMaxDepth(t *testing.T) {
 
 	ds, _ := testfixtures.StandardDatastoreWithSchema(rawDS, require)
 
-	mutation := tuple.Create(tuple.Parse("folder:oops#owner@folder:oops#owner"))
+	mutation := tuple.Create(tuple.Parse("folder:oops#parent@folder:oops"))
 
 	ctx := log.Logger.WithContext(datastoremw.ContextWithHandle(context.Background()))
 	require.NoError(datastoremw.SetInContext(ctx, ds))
 
 	revision, err := common.UpdateTuplesInDatastore(ctx, ds, mutation)
 	require.NoError(err)
-	require.True(revision.GreaterThan(decimal.Zero))
+	require.True(revision.GreaterThan(datastore.NoRevision))
 
 	dispatch := NewLocalOnlyDispatcher(10)
 
 	_, err = dispatch.DispatchCheck(ctx, &v1.DispatchCheckRequest{
-		ResourceRelation: RR("folder", "owner"),
+		ResourceRelation: RR("folder", "view"),
 		ResourceIds:      []string{"oops"},
 		ResultsSetting:   v1.DispatchCheckRequest_ALLOW_SINGLE_RESULT,
 		Subject:          ONR("user", "fake", graph.Ellipsis),
@@ -254,7 +257,7 @@ func TestCheckMetadata(t *testing.T) {
 				t.Run(name, func(t *testing.T) {
 					require := require.New(t)
 
-					ctx, dispatch, revision := newLocalDispatcher(require)
+					ctx, dispatch, revision := newLocalDispatcher(t)
 
 					checkResult, err := dispatch.DispatchCheck(ctx, &v1.DispatchCheckRequest{
 						ResourceRelation: RR(tc.namespace, expected.relation),
@@ -271,7 +274,7 @@ func TestCheckMetadata(t *testing.T) {
 
 					isMember := false
 					if found, ok := checkResult.ResultsByResourceId[tc.objectID]; ok {
-						isMember = found.Membership == v1.DispatchCheckResponse_MEMBER
+						isMember = found.Membership == v1.ResourceCheckResult_MEMBER
 					}
 
 					require.Equal(expected.isMember, isMember)
@@ -283,20 +286,159 @@ func TestCheckMetadata(t *testing.T) {
 	}
 }
 
-func newLocalDispatcher(require *require.Assertions) (context.Context, dispatch.Dispatcher, decimal.Decimal) {
-	rawDS, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
-	require.NoError(err)
+func addFrame(trace *v1.CheckDebugTrace, foundFrames *util.Set[string]) {
+	foundFrames.Add(fmt.Sprintf("%s:%s#%s", trace.Request.ResourceRelation.Namespace, strings.Join(trace.Request.ResourceIds, ","), trace.Request.ResourceRelation.Relation))
+	for _, subTrace := range trace.SubProblems {
+		addFrame(subTrace, foundFrames)
+	}
+}
 
-	ds, revision := testfixtures.StandardDatastoreWithData(rawDS, require)
+func TestCheckDebugging(t *testing.T) {
+	type expectedFrame struct {
+		resourceType *core.RelationReference
+		resourceIDs  []string
+	}
+
+	testCases := []struct {
+		namespace      string
+		objectID       string
+		permission     string
+		subject        *core.ObjectAndRelation
+		expectedFrames []expectedFrame
+	}{
+		{
+			"document", "masterplan", "view",
+			ONR("user", "product_manager", graph.Ellipsis),
+			[]expectedFrame{
+				{
+					RR("document", "view"),
+					[]string{"masterplan"},
+				},
+				{
+					RR("document", "edit"),
+					[]string{"masterplan"},
+				},
+				{
+					RR("document", "owner"),
+					[]string{"masterplan"},
+				},
+			},
+		},
+		{
+			"document", "masterplan", "view_and_edit",
+			ONR("user", "product_manager", graph.Ellipsis),
+			[]expectedFrame{
+				{
+					RR("document", "view_and_edit"),
+					[]string{"masterplan"},
+				},
+			},
+		},
+		{
+			"document", "specialplan", "view_and_edit",
+			ONR("user", "multiroleguy", graph.Ellipsis),
+			[]expectedFrame{
+				{
+					RR("document", "view_and_edit"),
+					[]string{"specialplan"},
+				},
+				{
+					RR("document", "viewer_and_editor"),
+					[]string{"specialplan"},
+				},
+				{
+					RR("document", "edit"),
+					[]string{"specialplan"},
+				},
+				{
+					RR("document", "editor"),
+					[]string{"specialplan"},
+				},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		name := fmt.Sprintf(
+			"debugging::%s:%s#%s@%s:%s#%s",
+			tc.namespace,
+			tc.objectID,
+			tc.permission,
+			tc.subject.Namespace,
+			tc.subject.ObjectId,
+			tc.subject.Relation,
+		)
+
+		t.Run(name, func(t *testing.T) {
+			require := require.New(t)
+
+			ctx, dispatch, revision := newLocalDispatcher(t)
+
+			checkResult, err := dispatch.DispatchCheck(ctx, &v1.DispatchCheckRequest{
+				ResourceRelation: RR(tc.namespace, tc.permission),
+				ResourceIds:      []string{tc.objectID},
+				ResultsSetting:   v1.DispatchCheckRequest_ALLOW_SINGLE_RESULT,
+				Subject:          tc.subject,
+				Metadata: &v1.ResolverMeta{
+					AtRevision:     revision.String(),
+					DepthRemaining: 50,
+				},
+				Debug: v1.DispatchCheckRequest_ENABLE_BASIC_DEBUGGING,
+			})
+
+			require.NoError(err)
+			require.NotNil(checkResult.Metadata.DebugInfo)
+			require.NotNil(checkResult.Metadata.DebugInfo.Check)
+
+			expectedFrames := util.NewSet[string]()
+			for _, expectedFrame := range tc.expectedFrames {
+				expectedFrames.Add(fmt.Sprintf("%s:%s#%s", expectedFrame.resourceType.Namespace, strings.Join(expectedFrame.resourceIDs, ","), expectedFrame.resourceType.Relation))
+			}
+
+			foundFrames := util.NewSet[string]()
+			addFrame(checkResult.Metadata.DebugInfo.Check, foundFrames)
+
+			require.Empty(expectedFrames.Subtract(foundFrames).AsSlice(), "missing expected frames: %v", expectedFrames.Subtract(foundFrames).AsSlice())
+		})
+	}
+}
+
+func newLocalDispatcherWithConcurrencyLimit(t testing.TB, concurrencyLimit uint16) (context.Context, dispatch.Dispatcher, datastore.Revision) {
+	rawDS, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
+	require.NoError(t, err)
+
+	ds, revision := testfixtures.StandardDatastoreWithData(rawDS, require.New(t))
+
+	dispatch := NewLocalOnlyDispatcher(concurrencyLimit)
+
+	cachingDispatcher, err := caching.NewCachingDispatcher(caching.DispatchTestCache(t), "", &keys.CanonicalKeyHandler{})
+	cachingDispatcher.SetDelegate(dispatch)
+	require.NoError(t, err)
+
+	ctx := log.Logger.WithContext(datastoremw.ContextWithHandle(context.Background()))
+	require.NoError(t, datastoremw.SetInContext(ctx, ds))
+
+	return ctx, cachingDispatcher, revision
+}
+
+func newLocalDispatcher(t testing.TB) (context.Context, dispatch.Dispatcher, datastore.Revision) {
+	return newLocalDispatcherWithConcurrencyLimit(t, 10)
+}
+
+func newLocalDispatcherWithSchemaAndRels(t testing.TB, schema string, rels []*core.RelationTuple) (context.Context, dispatch.Dispatcher, datastore.Revision) {
+	rawDS, err := memdb.NewMemdbDatastore(0, 0, memdb.DisableGC)
+	require.NoError(t, err)
+
+	ds, revision := testfixtures.DatastoreFromSchemaAndTestRelationships(rawDS, schema, rels, require.New(t))
 
 	dispatch := NewLocalOnlyDispatcher(10)
 
-	cachingDispatcher, err := caching.NewCachingDispatcher(nil, "", &keys.CanonicalKeyHandler{})
+	cachingDispatcher, err := caching.NewCachingDispatcher(caching.DispatchTestCache(t), "", &keys.CanonicalKeyHandler{})
 	cachingDispatcher.SetDelegate(dispatch)
-	require.NoError(err)
+	require.NoError(t, err)
 
 	ctx := log.Logger.WithContext(datastoremw.ContextWithHandle(context.Background()))
-	require.NoError(datastoremw.SetInContext(ctx, ds))
+	require.NoError(t, datastoremw.SetInContext(ctx, ds))
 
 	return ctx, cachingDispatcher, revision
 }

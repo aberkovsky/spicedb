@@ -46,7 +46,7 @@ func (m *ContextualizedCaveat) CloneVT() *ContextualizedCaveat {
 		return (*ContextualizedCaveat)(nil)
 	}
 	r := &ContextualizedCaveat{
-		CaveatId: m.CaveatId,
+		CaveatName: m.CaveatName,
 	}
 	if rhs := m.Context; rhs != nil {
 		if vtpb, ok := interface{}(rhs).(interface{ CloneVT() *structpb.Struct }); ok {
@@ -66,17 +66,26 @@ func (m *ContextualizedCaveat) CloneGenericVT() proto.Message {
 	return m.CloneVT()
 }
 
-func (m *Caveat) CloneVT() *Caveat {
+func (m *CaveatDefinition) CloneVT() *CaveatDefinition {
 	if m == nil {
-		return (*Caveat)(nil)
+		return (*CaveatDefinition)(nil)
 	}
-	r := &Caveat{
-		Name: m.Name,
+	r := &CaveatDefinition{
+		Name:           m.Name,
+		Metadata:       m.Metadata.CloneVT(),
+		SourcePosition: m.SourcePosition.CloneVT(),
 	}
-	if rhs := m.Expression; rhs != nil {
+	if rhs := m.SerializedExpression; rhs != nil {
 		tmpBytes := make([]byte, len(rhs))
 		copy(tmpBytes, rhs)
-		r.Expression = tmpBytes
+		r.SerializedExpression = tmpBytes
+	}
+	if rhs := m.ParameterTypes; rhs != nil {
+		tmpContainer := make(map[string]*CaveatTypeReference, len(rhs))
+		for k, v := range rhs {
+			tmpContainer[k] = v.CloneVT()
+		}
+		r.ParameterTypes = tmpContainer
 	}
 	if len(m.unknownFields) > 0 {
 		r.unknownFields = make([]byte, len(m.unknownFields))
@@ -85,7 +94,32 @@ func (m *Caveat) CloneVT() *Caveat {
 	return r
 }
 
-func (m *Caveat) CloneGenericVT() proto.Message {
+func (m *CaveatDefinition) CloneGenericVT() proto.Message {
+	return m.CloneVT()
+}
+
+func (m *CaveatTypeReference) CloneVT() *CaveatTypeReference {
+	if m == nil {
+		return (*CaveatTypeReference)(nil)
+	}
+	r := &CaveatTypeReference{
+		TypeName: m.TypeName,
+	}
+	if rhs := m.ChildTypes; rhs != nil {
+		tmpContainer := make([]*CaveatTypeReference, len(rhs))
+		for k, v := range rhs {
+			tmpContainer[k] = v.CloneVT()
+		}
+		r.ChildTypes = tmpContainer
+	}
+	if len(m.unknownFields) > 0 {
+		r.unknownFields = make([]byte, len(m.unknownFields))
+		copy(r.unknownFields, m.unknownFields)
+	}
+	return r
+}
+
+func (m *CaveatTypeReference) CloneGenericVT() proto.Message {
 	return m.CloneVT()
 }
 
@@ -170,7 +204,8 @@ func (m *RelationTupleTreeNode) CloneVT() *RelationTupleTreeNode {
 		return (*RelationTupleTreeNode)(nil)
 	}
 	r := &RelationTupleTreeNode{
-		Expanded: m.Expanded.CloneVT(),
+		Expanded:         m.Expanded.CloneVT(),
+		CaveatExpression: m.CaveatExpression.CloneVT(),
 	}
 	if m.NodeType != nil {
 		r.NodeType = m.NodeType.(interface {
@@ -233,13 +268,32 @@ func (m *SetOperationUserset) CloneGenericVT() proto.Message {
 	return m.CloneVT()
 }
 
+func (m *DirectSubject) CloneVT() *DirectSubject {
+	if m == nil {
+		return (*DirectSubject)(nil)
+	}
+	r := &DirectSubject{
+		Subject:          m.Subject.CloneVT(),
+		CaveatExpression: m.CaveatExpression.CloneVT(),
+	}
+	if len(m.unknownFields) > 0 {
+		r.unknownFields = make([]byte, len(m.unknownFields))
+		copy(r.unknownFields, m.unknownFields)
+	}
+	return r
+}
+
+func (m *DirectSubject) CloneGenericVT() proto.Message {
+	return m.CloneVT()
+}
+
 func (m *DirectSubjects) CloneVT() *DirectSubjects {
 	if m == nil {
 		return (*DirectSubjects)(nil)
 	}
 	r := &DirectSubjects{}
 	if rhs := m.Subjects; rhs != nil {
-		tmpContainer := make([]*ObjectAndRelation, len(rhs))
+		tmpContainer := make([]*DirectSubject, len(rhs))
 		for k, v := range rhs {
 			tmpContainer[k] = v.CloneVT()
 		}
@@ -457,6 +511,7 @@ func (m *AllowedRelation) CloneVT() *AllowedRelation {
 	r := &AllowedRelation{
 		Namespace:      m.Namespace,
 		SourcePosition: m.SourcePosition.CloneVT(),
+		RequiredCaveat: m.RequiredCaveat.CloneVT(),
 	}
 	if m.RelationOrWildcard != nil {
 		r.RelationOrWildcard = m.RelationOrWildcard.(interface {
@@ -492,6 +547,24 @@ func (m *AllowedRelation_PublicWildcard_) CloneVT() isAllowedRelation_RelationOr
 		PublicWildcard: m.PublicWildcard.CloneVT(),
 	}
 	return r
+}
+
+func (m *AllowedCaveat) CloneVT() *AllowedCaveat {
+	if m == nil {
+		return (*AllowedCaveat)(nil)
+	}
+	r := &AllowedCaveat{
+		CaveatName: m.CaveatName,
+	}
+	if len(m.unknownFields) > 0 {
+		r.unknownFields = make([]byte, len(m.unknownFields))
+		copy(r.unknownFields, m.unknownFields)
+	}
+	return r
+}
+
+func (m *AllowedCaveat) CloneGenericVT() proto.Message {
+	return m.CloneVT()
 }
 
 func (m *UsersetRewrite) CloneVT() *UsersetRewrite {
@@ -757,6 +830,1166 @@ func (m *SourcePosition) CloneGenericVT() proto.Message {
 	return m.CloneVT()
 }
 
+func (m *CaveatExpression) CloneVT() *CaveatExpression {
+	if m == nil {
+		return (*CaveatExpression)(nil)
+	}
+	r := &CaveatExpression{}
+	if m.OperationOrCaveat != nil {
+		r.OperationOrCaveat = m.OperationOrCaveat.(interface {
+			CloneVT() isCaveatExpression_OperationOrCaveat
+		}).CloneVT()
+	}
+	if len(m.unknownFields) > 0 {
+		r.unknownFields = make([]byte, len(m.unknownFields))
+		copy(r.unknownFields, m.unknownFields)
+	}
+	return r
+}
+
+func (m *CaveatExpression) CloneGenericVT() proto.Message {
+	return m.CloneVT()
+}
+
+func (m *CaveatExpression_Operation) CloneVT() isCaveatExpression_OperationOrCaveat {
+	if m == nil {
+		return (*CaveatExpression_Operation)(nil)
+	}
+	r := &CaveatExpression_Operation{
+		Operation: m.Operation.CloneVT(),
+	}
+	return r
+}
+
+func (m *CaveatExpression_Caveat) CloneVT() isCaveatExpression_OperationOrCaveat {
+	if m == nil {
+		return (*CaveatExpression_Caveat)(nil)
+	}
+	r := &CaveatExpression_Caveat{
+		Caveat: m.Caveat.CloneVT(),
+	}
+	return r
+}
+
+func (m *CaveatOperation) CloneVT() *CaveatOperation {
+	if m == nil {
+		return (*CaveatOperation)(nil)
+	}
+	r := &CaveatOperation{
+		Op: m.Op,
+	}
+	if rhs := m.Children; rhs != nil {
+		tmpContainer := make([]*CaveatExpression, len(rhs))
+		for k, v := range rhs {
+			tmpContainer[k] = v.CloneVT()
+		}
+		r.Children = tmpContainer
+	}
+	if len(m.unknownFields) > 0 {
+		r.unknownFields = make([]byte, len(m.unknownFields))
+		copy(r.unknownFields, m.unknownFields)
+	}
+	return r
+}
+
+func (m *CaveatOperation) CloneGenericVT() proto.Message {
+	return m.CloneVT()
+}
+
+func (this *RelationTuple) EqualVT(that *RelationTuple) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if !this.ResourceAndRelation.EqualVT(that.ResourceAndRelation) {
+		return false
+	}
+	if !this.Subject.EqualVT(that.Subject) {
+		return false
+	}
+	if !this.Caveat.EqualVT(that.Caveat) {
+		return false
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *ContextualizedCaveat) EqualVT(that *ContextualizedCaveat) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if this.CaveatName != that.CaveatName {
+		return false
+	}
+	if equal, ok := interface{}(this.Context).(interface{ EqualVT(*structpb.Struct) bool }); ok {
+		if !equal.EqualVT(that.Context) {
+			return false
+		}
+	} else if !proto.Equal(this.Context, that.Context) {
+		return false
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *CaveatDefinition) EqualVT(that *CaveatDefinition) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if this.Name != that.Name {
+		return false
+	}
+	if string(this.SerializedExpression) != string(that.SerializedExpression) {
+		return false
+	}
+	if len(this.ParameterTypes) != len(that.ParameterTypes) {
+		return false
+	}
+	for i, vx := range this.ParameterTypes {
+		vy, ok := that.ParameterTypes[i]
+		if !ok {
+			return false
+		}
+		if p, q := vx, vy; p != q {
+			if p == nil {
+				p = &CaveatTypeReference{}
+			}
+			if q == nil {
+				q = &CaveatTypeReference{}
+			}
+			if !p.EqualVT(q) {
+				return false
+			}
+		}
+	}
+	if !this.Metadata.EqualVT(that.Metadata) {
+		return false
+	}
+	if !this.SourcePosition.EqualVT(that.SourcePosition) {
+		return false
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *CaveatTypeReference) EqualVT(that *CaveatTypeReference) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if this.TypeName != that.TypeName {
+		return false
+	}
+	if len(this.ChildTypes) != len(that.ChildTypes) {
+		return false
+	}
+	for i, vx := range this.ChildTypes {
+		vy := that.ChildTypes[i]
+		if p, q := vx, vy; p != q {
+			if p == nil {
+				p = &CaveatTypeReference{}
+			}
+			if q == nil {
+				q = &CaveatTypeReference{}
+			}
+			if !p.EqualVT(q) {
+				return false
+			}
+		}
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *ObjectAndRelation) EqualVT(that *ObjectAndRelation) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if this.Namespace != that.Namespace {
+		return false
+	}
+	if this.ObjectId != that.ObjectId {
+		return false
+	}
+	if this.Relation != that.Relation {
+		return false
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *RelationReference) EqualVT(that *RelationReference) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if this.Namespace != that.Namespace {
+		return false
+	}
+	if this.Relation != that.Relation {
+		return false
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *Zookie) EqualVT(that *Zookie) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if this.Token != that.Token {
+		return false
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *RelationTupleUpdate) EqualVT(that *RelationTupleUpdate) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if this.Operation != that.Operation {
+		return false
+	}
+	if !this.Tuple.EqualVT(that.Tuple) {
+		return false
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *RelationTupleTreeNode) EqualVT(that *RelationTupleTreeNode) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if this.NodeType == nil && that.NodeType != nil {
+		return false
+	} else if this.NodeType != nil {
+		if that.NodeType == nil {
+			return false
+		}
+		if !this.NodeType.(interface {
+			EqualVT(isRelationTupleTreeNode_NodeType) bool
+		}).EqualVT(that.NodeType) {
+			return false
+		}
+	}
+	if !this.Expanded.EqualVT(that.Expanded) {
+		return false
+	}
+	if !this.CaveatExpression.EqualVT(that.CaveatExpression) {
+		return false
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *RelationTupleTreeNode_IntermediateNode) EqualVT(thatIface isRelationTupleTreeNode_NodeType) bool {
+	that, ok := thatIface.(*RelationTupleTreeNode_IntermediateNode)
+	if !ok {
+		return false
+	}
+	if this == that {
+		return true
+	}
+	if this == nil && that != nil || this != nil && that == nil {
+		return false
+	}
+	if p, q := this.IntermediateNode, that.IntermediateNode; p != q {
+		if p == nil {
+			p = &SetOperationUserset{}
+		}
+		if q == nil {
+			q = &SetOperationUserset{}
+		}
+		if !p.EqualVT(q) {
+			return false
+		}
+	}
+	return true
+}
+
+func (this *RelationTupleTreeNode_LeafNode) EqualVT(thatIface isRelationTupleTreeNode_NodeType) bool {
+	that, ok := thatIface.(*RelationTupleTreeNode_LeafNode)
+	if !ok {
+		return false
+	}
+	if this == that {
+		return true
+	}
+	if this == nil && that != nil || this != nil && that == nil {
+		return false
+	}
+	if p, q := this.LeafNode, that.LeafNode; p != q {
+		if p == nil {
+			p = &DirectSubjects{}
+		}
+		if q == nil {
+			q = &DirectSubjects{}
+		}
+		if !p.EqualVT(q) {
+			return false
+		}
+	}
+	return true
+}
+
+func (this *SetOperationUserset) EqualVT(that *SetOperationUserset) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if this.Operation != that.Operation {
+		return false
+	}
+	if len(this.ChildNodes) != len(that.ChildNodes) {
+		return false
+	}
+	for i, vx := range this.ChildNodes {
+		vy := that.ChildNodes[i]
+		if p, q := vx, vy; p != q {
+			if p == nil {
+				p = &RelationTupleTreeNode{}
+			}
+			if q == nil {
+				q = &RelationTupleTreeNode{}
+			}
+			if !p.EqualVT(q) {
+				return false
+			}
+		}
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *DirectSubject) EqualVT(that *DirectSubject) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if !this.Subject.EqualVT(that.Subject) {
+		return false
+	}
+	if !this.CaveatExpression.EqualVT(that.CaveatExpression) {
+		return false
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *DirectSubjects) EqualVT(that *DirectSubjects) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if len(this.Subjects) != len(that.Subjects) {
+		return false
+	}
+	for i, vx := range this.Subjects {
+		vy := that.Subjects[i]
+		if p, q := vx, vy; p != q {
+			if p == nil {
+				p = &DirectSubject{}
+			}
+			if q == nil {
+				q = &DirectSubject{}
+			}
+			if !p.EqualVT(q) {
+				return false
+			}
+		}
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *Metadata) EqualVT(that *Metadata) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if len(this.MetadataMessage) != len(that.MetadataMessage) {
+		return false
+	}
+	for i, vx := range this.MetadataMessage {
+		vy := that.MetadataMessage[i]
+		if p, q := vx, vy; p != q {
+			if p == nil {
+				p = &anypb.Any{}
+			}
+			if q == nil {
+				q = &anypb.Any{}
+			}
+			if equal, ok := interface{}(p).(interface{ EqualVT(*anypb.Any) bool }); ok {
+				if !equal.EqualVT(q) {
+					return false
+				}
+			} else if !proto.Equal(p, q) {
+				return false
+			}
+		}
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *NamespaceDefinition) EqualVT(that *NamespaceDefinition) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if this.Name != that.Name {
+		return false
+	}
+	if len(this.Relation) != len(that.Relation) {
+		return false
+	}
+	for i, vx := range this.Relation {
+		vy := that.Relation[i]
+		if p, q := vx, vy; p != q {
+			if p == nil {
+				p = &Relation{}
+			}
+			if q == nil {
+				q = &Relation{}
+			}
+			if !p.EqualVT(q) {
+				return false
+			}
+		}
+	}
+	if !this.Metadata.EqualVT(that.Metadata) {
+		return false
+	}
+	if !this.SourcePosition.EqualVT(that.SourcePosition) {
+		return false
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *Relation) EqualVT(that *Relation) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if this.Name != that.Name {
+		return false
+	}
+	if !this.UsersetRewrite.EqualVT(that.UsersetRewrite) {
+		return false
+	}
+	if !this.TypeInformation.EqualVT(that.TypeInformation) {
+		return false
+	}
+	if !this.Metadata.EqualVT(that.Metadata) {
+		return false
+	}
+	if !this.SourcePosition.EqualVT(that.SourcePosition) {
+		return false
+	}
+	if this.AliasingRelation != that.AliasingRelation {
+		return false
+	}
+	if this.CanonicalCacheKey != that.CanonicalCacheKey {
+		return false
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *ReachabilityGraph) EqualVT(that *ReachabilityGraph) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if len(this.EntrypointsBySubjectType) != len(that.EntrypointsBySubjectType) {
+		return false
+	}
+	for i, vx := range this.EntrypointsBySubjectType {
+		vy, ok := that.EntrypointsBySubjectType[i]
+		if !ok {
+			return false
+		}
+		if p, q := vx, vy; p != q {
+			if p == nil {
+				p = &ReachabilityEntrypoints{}
+			}
+			if q == nil {
+				q = &ReachabilityEntrypoints{}
+			}
+			if !p.EqualVT(q) {
+				return false
+			}
+		}
+	}
+	if len(this.EntrypointsBySubjectRelation) != len(that.EntrypointsBySubjectRelation) {
+		return false
+	}
+	for i, vx := range this.EntrypointsBySubjectRelation {
+		vy, ok := that.EntrypointsBySubjectRelation[i]
+		if !ok {
+			return false
+		}
+		if p, q := vx, vy; p != q {
+			if p == nil {
+				p = &ReachabilityEntrypoints{}
+			}
+			if q == nil {
+				q = &ReachabilityEntrypoints{}
+			}
+			if !p.EqualVT(q) {
+				return false
+			}
+		}
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *ReachabilityEntrypoints) EqualVT(that *ReachabilityEntrypoints) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if len(this.Entrypoints) != len(that.Entrypoints) {
+		return false
+	}
+	for i, vx := range this.Entrypoints {
+		vy := that.Entrypoints[i]
+		if p, q := vx, vy; p != q {
+			if p == nil {
+				p = &ReachabilityEntrypoint{}
+			}
+			if q == nil {
+				q = &ReachabilityEntrypoint{}
+			}
+			if !p.EqualVT(q) {
+				return false
+			}
+		}
+	}
+	if this.SubjectType != that.SubjectType {
+		return false
+	}
+	if !this.SubjectRelation.EqualVT(that.SubjectRelation) {
+		return false
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *ReachabilityEntrypoint) EqualVT(that *ReachabilityEntrypoint) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if this.Kind != that.Kind {
+		return false
+	}
+	if !this.TargetRelation.EqualVT(that.TargetRelation) {
+		return false
+	}
+	if this.ResultStatus != that.ResultStatus {
+		return false
+	}
+	if this.TuplesetRelation != that.TuplesetRelation {
+		return false
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *TypeInformation) EqualVT(that *TypeInformation) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if len(this.AllowedDirectRelations) != len(that.AllowedDirectRelations) {
+		return false
+	}
+	for i, vx := range this.AllowedDirectRelations {
+		vy := that.AllowedDirectRelations[i]
+		if p, q := vx, vy; p != q {
+			if p == nil {
+				p = &AllowedRelation{}
+			}
+			if q == nil {
+				q = &AllowedRelation{}
+			}
+			if !p.EqualVT(q) {
+				return false
+			}
+		}
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *AllowedRelation_PublicWildcard) EqualVT(that *AllowedRelation_PublicWildcard) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *AllowedRelation) EqualVT(that *AllowedRelation) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if this.RelationOrWildcard == nil && that.RelationOrWildcard != nil {
+		return false
+	} else if this.RelationOrWildcard != nil {
+		if that.RelationOrWildcard == nil {
+			return false
+		}
+		if !this.RelationOrWildcard.(interface {
+			EqualVT(isAllowedRelation_RelationOrWildcard) bool
+		}).EqualVT(that.RelationOrWildcard) {
+			return false
+		}
+	}
+	if this.Namespace != that.Namespace {
+		return false
+	}
+	if !this.SourcePosition.EqualVT(that.SourcePosition) {
+		return false
+	}
+	if !this.RequiredCaveat.EqualVT(that.RequiredCaveat) {
+		return false
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *AllowedRelation_Relation) EqualVT(thatIface isAllowedRelation_RelationOrWildcard) bool {
+	that, ok := thatIface.(*AllowedRelation_Relation)
+	if !ok {
+		return false
+	}
+	if this == that {
+		return true
+	}
+	if this == nil && that != nil || this != nil && that == nil {
+		return false
+	}
+	if this.Relation != that.Relation {
+		return false
+	}
+	return true
+}
+
+func (this *AllowedRelation_PublicWildcard_) EqualVT(thatIface isAllowedRelation_RelationOrWildcard) bool {
+	that, ok := thatIface.(*AllowedRelation_PublicWildcard_)
+	if !ok {
+		return false
+	}
+	if this == that {
+		return true
+	}
+	if this == nil && that != nil || this != nil && that == nil {
+		return false
+	}
+	if p, q := this.PublicWildcard, that.PublicWildcard; p != q {
+		if p == nil {
+			p = &AllowedRelation_PublicWildcard{}
+		}
+		if q == nil {
+			q = &AllowedRelation_PublicWildcard{}
+		}
+		if !p.EqualVT(q) {
+			return false
+		}
+	}
+	return true
+}
+
+func (this *AllowedCaveat) EqualVT(that *AllowedCaveat) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if this.CaveatName != that.CaveatName {
+		return false
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *UsersetRewrite) EqualVT(that *UsersetRewrite) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if this.RewriteOperation == nil && that.RewriteOperation != nil {
+		return false
+	} else if this.RewriteOperation != nil {
+		if that.RewriteOperation == nil {
+			return false
+		}
+		if !this.RewriteOperation.(interface {
+			EqualVT(isUsersetRewrite_RewriteOperation) bool
+		}).EqualVT(that.RewriteOperation) {
+			return false
+		}
+	}
+	if !this.SourcePosition.EqualVT(that.SourcePosition) {
+		return false
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *UsersetRewrite_Union) EqualVT(thatIface isUsersetRewrite_RewriteOperation) bool {
+	that, ok := thatIface.(*UsersetRewrite_Union)
+	if !ok {
+		return false
+	}
+	if this == that {
+		return true
+	}
+	if this == nil && that != nil || this != nil && that == nil {
+		return false
+	}
+	if p, q := this.Union, that.Union; p != q {
+		if p == nil {
+			p = &SetOperation{}
+		}
+		if q == nil {
+			q = &SetOperation{}
+		}
+		if !p.EqualVT(q) {
+			return false
+		}
+	}
+	return true
+}
+
+func (this *UsersetRewrite_Intersection) EqualVT(thatIface isUsersetRewrite_RewriteOperation) bool {
+	that, ok := thatIface.(*UsersetRewrite_Intersection)
+	if !ok {
+		return false
+	}
+	if this == that {
+		return true
+	}
+	if this == nil && that != nil || this != nil && that == nil {
+		return false
+	}
+	if p, q := this.Intersection, that.Intersection; p != q {
+		if p == nil {
+			p = &SetOperation{}
+		}
+		if q == nil {
+			q = &SetOperation{}
+		}
+		if !p.EqualVT(q) {
+			return false
+		}
+	}
+	return true
+}
+
+func (this *UsersetRewrite_Exclusion) EqualVT(thatIface isUsersetRewrite_RewriteOperation) bool {
+	that, ok := thatIface.(*UsersetRewrite_Exclusion)
+	if !ok {
+		return false
+	}
+	if this == that {
+		return true
+	}
+	if this == nil && that != nil || this != nil && that == nil {
+		return false
+	}
+	if p, q := this.Exclusion, that.Exclusion; p != q {
+		if p == nil {
+			p = &SetOperation{}
+		}
+		if q == nil {
+			q = &SetOperation{}
+		}
+		if !p.EqualVT(q) {
+			return false
+		}
+	}
+	return true
+}
+
+func (this *SetOperation_Child_This) EqualVT(that *SetOperation_Child_This) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *SetOperation_Child_Nil) EqualVT(that *SetOperation_Child_Nil) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *SetOperation_Child) EqualVT(that *SetOperation_Child) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if this.ChildType == nil && that.ChildType != nil {
+		return false
+	} else if this.ChildType != nil {
+		if that.ChildType == nil {
+			return false
+		}
+		if !this.ChildType.(interface {
+			EqualVT(isSetOperation_Child_ChildType) bool
+		}).EqualVT(that.ChildType) {
+			return false
+		}
+	}
+	if !this.SourcePosition.EqualVT(that.SourcePosition) {
+		return false
+	}
+	if len(this.OperationPath) != len(that.OperationPath) {
+		return false
+	}
+	for i, vx := range this.OperationPath {
+		vy := that.OperationPath[i]
+		if vx != vy {
+			return false
+		}
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *SetOperation_Child_XThis) EqualVT(thatIface isSetOperation_Child_ChildType) bool {
+	that, ok := thatIface.(*SetOperation_Child_XThis)
+	if !ok {
+		return false
+	}
+	if this == that {
+		return true
+	}
+	if this == nil && that != nil || this != nil && that == nil {
+		return false
+	}
+	if p, q := this.XThis, that.XThis; p != q {
+		if p == nil {
+			p = &SetOperation_Child_This{}
+		}
+		if q == nil {
+			q = &SetOperation_Child_This{}
+		}
+		if !p.EqualVT(q) {
+			return false
+		}
+	}
+	return true
+}
+
+func (this *SetOperation_Child_ComputedUserset) EqualVT(thatIface isSetOperation_Child_ChildType) bool {
+	that, ok := thatIface.(*SetOperation_Child_ComputedUserset)
+	if !ok {
+		return false
+	}
+	if this == that {
+		return true
+	}
+	if this == nil && that != nil || this != nil && that == nil {
+		return false
+	}
+	if p, q := this.ComputedUserset, that.ComputedUserset; p != q {
+		if p == nil {
+			p = &ComputedUserset{}
+		}
+		if q == nil {
+			q = &ComputedUserset{}
+		}
+		if !p.EqualVT(q) {
+			return false
+		}
+	}
+	return true
+}
+
+func (this *SetOperation_Child_TupleToUserset) EqualVT(thatIface isSetOperation_Child_ChildType) bool {
+	that, ok := thatIface.(*SetOperation_Child_TupleToUserset)
+	if !ok {
+		return false
+	}
+	if this == that {
+		return true
+	}
+	if this == nil && that != nil || this != nil && that == nil {
+		return false
+	}
+	if p, q := this.TupleToUserset, that.TupleToUserset; p != q {
+		if p == nil {
+			p = &TupleToUserset{}
+		}
+		if q == nil {
+			q = &TupleToUserset{}
+		}
+		if !p.EqualVT(q) {
+			return false
+		}
+	}
+	return true
+}
+
+func (this *SetOperation_Child_UsersetRewrite) EqualVT(thatIface isSetOperation_Child_ChildType) bool {
+	that, ok := thatIface.(*SetOperation_Child_UsersetRewrite)
+	if !ok {
+		return false
+	}
+	if this == that {
+		return true
+	}
+	if this == nil && that != nil || this != nil && that == nil {
+		return false
+	}
+	if p, q := this.UsersetRewrite, that.UsersetRewrite; p != q {
+		if p == nil {
+			p = &UsersetRewrite{}
+		}
+		if q == nil {
+			q = &UsersetRewrite{}
+		}
+		if !p.EqualVT(q) {
+			return false
+		}
+	}
+	return true
+}
+
+func (this *SetOperation_Child_XNil) EqualVT(thatIface isSetOperation_Child_ChildType) bool {
+	that, ok := thatIface.(*SetOperation_Child_XNil)
+	if !ok {
+		return false
+	}
+	if this == that {
+		return true
+	}
+	if this == nil && that != nil || this != nil && that == nil {
+		return false
+	}
+	if p, q := this.XNil, that.XNil; p != q {
+		if p == nil {
+			p = &SetOperation_Child_Nil{}
+		}
+		if q == nil {
+			q = &SetOperation_Child_Nil{}
+		}
+		if !p.EqualVT(q) {
+			return false
+		}
+	}
+	return true
+}
+
+func (this *SetOperation) EqualVT(that *SetOperation) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if len(this.Child) != len(that.Child) {
+		return false
+	}
+	for i, vx := range this.Child {
+		vy := that.Child[i]
+		if p, q := vx, vy; p != q {
+			if p == nil {
+				p = &SetOperation_Child{}
+			}
+			if q == nil {
+				q = &SetOperation_Child{}
+			}
+			if !p.EqualVT(q) {
+				return false
+			}
+		}
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *TupleToUserset_Tupleset) EqualVT(that *TupleToUserset_Tupleset) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if this.Relation != that.Relation {
+		return false
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *TupleToUserset) EqualVT(that *TupleToUserset) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if !this.Tupleset.EqualVT(that.Tupleset) {
+		return false
+	}
+	if !this.ComputedUserset.EqualVT(that.ComputedUserset) {
+		return false
+	}
+	if !this.SourcePosition.EqualVT(that.SourcePosition) {
+		return false
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *ComputedUserset) EqualVT(that *ComputedUserset) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if this.Object != that.Object {
+		return false
+	}
+	if this.Relation != that.Relation {
+		return false
+	}
+	if !this.SourcePosition.EqualVT(that.SourcePosition) {
+		return false
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *SourcePosition) EqualVT(that *SourcePosition) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if this.ZeroIndexedLineNumber != that.ZeroIndexedLineNumber {
+		return false
+	}
+	if this.ZeroIndexedColumnPosition != that.ZeroIndexedColumnPosition {
+		return false
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *CaveatExpression) EqualVT(that *CaveatExpression) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if this.OperationOrCaveat == nil && that.OperationOrCaveat != nil {
+		return false
+	} else if this.OperationOrCaveat != nil {
+		if that.OperationOrCaveat == nil {
+			return false
+		}
+		if !this.OperationOrCaveat.(interface {
+			EqualVT(isCaveatExpression_OperationOrCaveat) bool
+		}).EqualVT(that.OperationOrCaveat) {
+			return false
+		}
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
+func (this *CaveatExpression_Operation) EqualVT(thatIface isCaveatExpression_OperationOrCaveat) bool {
+	that, ok := thatIface.(*CaveatExpression_Operation)
+	if !ok {
+		return false
+	}
+	if this == that {
+		return true
+	}
+	if this == nil && that != nil || this != nil && that == nil {
+		return false
+	}
+	if p, q := this.Operation, that.Operation; p != q {
+		if p == nil {
+			p = &CaveatOperation{}
+		}
+		if q == nil {
+			q = &CaveatOperation{}
+		}
+		if !p.EqualVT(q) {
+			return false
+		}
+	}
+	return true
+}
+
+func (this *CaveatExpression_Caveat) EqualVT(thatIface isCaveatExpression_OperationOrCaveat) bool {
+	that, ok := thatIface.(*CaveatExpression_Caveat)
+	if !ok {
+		return false
+	}
+	if this == that {
+		return true
+	}
+	if this == nil && that != nil || this != nil && that == nil {
+		return false
+	}
+	if p, q := this.Caveat, that.Caveat; p != q {
+		if p == nil {
+			p = &ContextualizedCaveat{}
+		}
+		if q == nil {
+			q = &ContextualizedCaveat{}
+		}
+		if !p.EqualVT(q) {
+			return false
+		}
+	}
+	return true
+}
+
+func (this *CaveatOperation) EqualVT(that *CaveatOperation) bool {
+	if this == nil {
+		return that == nil
+	} else if that == nil {
+		return false
+	}
+	if this.Op != that.Op {
+		return false
+	}
+	if len(this.Children) != len(that.Children) {
+		return false
+	}
+	for i, vx := range this.Children {
+		vy := that.Children[i]
+		if p, q := vx, vy; p != q {
+			if p == nil {
+				p = &CaveatExpression{}
+			}
+			if q == nil {
+				q = &CaveatExpression{}
+			}
+			if !p.EqualVT(q) {
+				return false
+			}
+		}
+	}
+	return string(this.unknownFields) == string(that.unknownFields)
+}
+
 func (m *RelationTuple) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
@@ -872,15 +2105,17 @@ func (m *ContextualizedCaveat) MarshalToSizedBufferVT(dAtA []byte) (int, error) 
 		i--
 		dAtA[i] = 0x12
 	}
-	if m.CaveatId != 0 {
-		i = encodeVarint(dAtA, i, uint64(m.CaveatId))
+	if len(m.CaveatName) > 0 {
+		i -= len(m.CaveatName)
+		copy(dAtA[i:], m.CaveatName)
+		i = encodeVarint(dAtA, i, uint64(len(m.CaveatName)))
 		i--
-		dAtA[i] = 0x8
+		dAtA[i] = 0xa
 	}
 	return len(dAtA) - i, nil
 }
 
-func (m *Caveat) MarshalVT() (dAtA []byte, err error) {
+func (m *CaveatDefinition) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
 	}
@@ -893,12 +2128,12 @@ func (m *Caveat) MarshalVT() (dAtA []byte, err error) {
 	return dAtA[:n], nil
 }
 
-func (m *Caveat) MarshalToVT(dAtA []byte) (int, error) {
+func (m *CaveatDefinition) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
 }
 
-func (m *Caveat) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+func (m *CaveatDefinition) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m == nil {
 		return 0, nil
 	}
@@ -910,10 +2145,52 @@ func (m *Caveat) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if len(m.Expression) > 0 {
-		i -= len(m.Expression)
-		copy(dAtA[i:], m.Expression)
-		i = encodeVarint(dAtA, i, uint64(len(m.Expression)))
+	if m.SourcePosition != nil {
+		size, err := m.SourcePosition.MarshalToSizedBufferVT(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+		i = encodeVarint(dAtA, i, uint64(size))
+		i--
+		dAtA[i] = 0x2a
+	}
+	if m.Metadata != nil {
+		size, err := m.Metadata.MarshalToSizedBufferVT(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+		i = encodeVarint(dAtA, i, uint64(size))
+		i--
+		dAtA[i] = 0x22
+	}
+	if len(m.ParameterTypes) > 0 {
+		for k := range m.ParameterTypes {
+			v := m.ParameterTypes[k]
+			baseI := i
+			size, err := v.MarshalToSizedBufferVT(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarint(dAtA, i, uint64(size))
+			i--
+			dAtA[i] = 0x12
+			i -= len(k)
+			copy(dAtA[i:], k)
+			i = encodeVarint(dAtA, i, uint64(len(k)))
+			i--
+			dAtA[i] = 0xa
+			i = encodeVarint(dAtA, i, uint64(baseI-i))
+			i--
+			dAtA[i] = 0x1a
+		}
+	}
+	if len(m.SerializedExpression) > 0 {
+		i -= len(m.SerializedExpression)
+		copy(dAtA[i:], m.SerializedExpression)
+		i = encodeVarint(dAtA, i, uint64(len(m.SerializedExpression)))
 		i--
 		dAtA[i] = 0x12
 	}
@@ -921,6 +2198,58 @@ func (m *Caveat) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.Name)
 		copy(dAtA[i:], m.Name)
 		i = encodeVarint(dAtA, i, uint64(len(m.Name)))
+		i--
+		dAtA[i] = 0xa
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *CaveatTypeReference) MarshalVT() (dAtA []byte, err error) {
+	if m == nil {
+		return nil, nil
+	}
+	size := m.SizeVT()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *CaveatTypeReference) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *CaveatTypeReference) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.unknownFields != nil {
+		i -= len(m.unknownFields)
+		copy(dAtA[i:], m.unknownFields)
+	}
+	if len(m.ChildTypes) > 0 {
+		for iNdEx := len(m.ChildTypes) - 1; iNdEx >= 0; iNdEx-- {
+			size, err := m.ChildTypes[iNdEx].MarshalToSizedBufferVT(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarint(dAtA, i, uint64(size))
+			i--
+			dAtA[i] = 0x12
+		}
+	}
+	if len(m.TypeName) > 0 {
+		i -= len(m.TypeName)
+		copy(dAtA[i:], m.TypeName)
+		i = encodeVarint(dAtA, i, uint64(len(m.TypeName)))
 		i--
 		dAtA[i] = 0xa
 	}
@@ -1155,6 +2484,16 @@ func (m *RelationTupleTreeNode) MarshalToSizedBufferVT(dAtA []byte) (int, error)
 		}
 		i -= size
 	}
+	if m.CaveatExpression != nil {
+		size, err := m.CaveatExpression.MarshalToSizedBufferVT(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+		i = encodeVarint(dAtA, i, uint64(size))
+		i--
+		dAtA[i] = 0x22
+	}
 	if m.Expanded != nil {
 		size, err := m.Expanded.MarshalToSizedBufferVT(dAtA[:i])
 		if err != nil {
@@ -1252,6 +2591,59 @@ func (m *SetOperationUserset) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i = encodeVarint(dAtA, i, uint64(m.Operation))
 		i--
 		dAtA[i] = 0x8
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *DirectSubject) MarshalVT() (dAtA []byte, err error) {
+	if m == nil {
+		return nil, nil
+	}
+	size := m.SizeVT()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *DirectSubject) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *DirectSubject) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.unknownFields != nil {
+		i -= len(m.unknownFields)
+		copy(dAtA[i:], m.unknownFields)
+	}
+	if m.CaveatExpression != nil {
+		size, err := m.CaveatExpression.MarshalToSizedBufferVT(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+		i = encodeVarint(dAtA, i, uint64(size))
+		i--
+		dAtA[i] = 0x12
+	}
+	if m.Subject != nil {
+		size, err := m.Subject.MarshalToSizedBufferVT(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+		i = encodeVarint(dAtA, i, uint64(size))
+		i--
+		dAtA[i] = 0xa
 	}
 	return len(dAtA) - i, nil
 }
@@ -1840,6 +3232,16 @@ func (m *AllowedRelation) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		}
 		i -= size
 	}
+	if m.RequiredCaveat != nil {
+		size, err := m.RequiredCaveat.MarshalToSizedBufferVT(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+		i = encodeVarint(dAtA, i, uint64(size))
+		i--
+		dAtA[i] = 0x32
+	}
 	if m.SourcePosition != nil {
 		size, err := m.SourcePosition.MarshalToSizedBufferVT(dAtA[:i])
 		if err != nil {
@@ -1893,6 +3295,46 @@ func (m *AllowedRelation_PublicWildcard_) MarshalToSizedBufferVT(dAtA []byte) (i
 	}
 	return len(dAtA) - i, nil
 }
+func (m *AllowedCaveat) MarshalVT() (dAtA []byte, err error) {
+	if m == nil {
+		return nil, nil
+	}
+	size := m.SizeVT()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *AllowedCaveat) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *AllowedCaveat) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.unknownFields != nil {
+		i -= len(m.unknownFields)
+		copy(dAtA[i:], m.unknownFields)
+	}
+	if len(m.CaveatName) > 0 {
+		i -= len(m.CaveatName)
+		copy(dAtA[i:], m.CaveatName)
+		i = encodeVarint(dAtA, i, uint64(len(m.CaveatName)))
+		i--
+		dAtA[i] = 0xa
+	}
+	return len(dAtA) - i, nil
+}
+
 func (m *UsersetRewrite) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
@@ -2481,6 +3923,136 @@ func (m *SourcePosition) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	return len(dAtA) - i, nil
 }
 
+func (m *CaveatExpression) MarshalVT() (dAtA []byte, err error) {
+	if m == nil {
+		return nil, nil
+	}
+	size := m.SizeVT()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *CaveatExpression) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *CaveatExpression) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.unknownFields != nil {
+		i -= len(m.unknownFields)
+		copy(dAtA[i:], m.unknownFields)
+	}
+	if vtmsg, ok := m.OperationOrCaveat.(interface {
+		MarshalToSizedBufferVT([]byte) (int, error)
+	}); ok {
+		size, err := vtmsg.MarshalToSizedBufferVT(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *CaveatExpression_Operation) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *CaveatExpression_Operation) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.Operation != nil {
+		size, err := m.Operation.MarshalToSizedBufferVT(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+		i = encodeVarint(dAtA, i, uint64(size))
+		i--
+		dAtA[i] = 0xa
+	}
+	return len(dAtA) - i, nil
+}
+func (m *CaveatExpression_Caveat) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *CaveatExpression_Caveat) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.Caveat != nil {
+		size, err := m.Caveat.MarshalToSizedBufferVT(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+		i = encodeVarint(dAtA, i, uint64(size))
+		i--
+		dAtA[i] = 0x12
+	}
+	return len(dAtA) - i, nil
+}
+func (m *CaveatOperation) MarshalVT() (dAtA []byte, err error) {
+	if m == nil {
+		return nil, nil
+	}
+	size := m.SizeVT()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *CaveatOperation) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *CaveatOperation) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.unknownFields != nil {
+		i -= len(m.unknownFields)
+		copy(dAtA[i:], m.unknownFields)
+	}
+	if len(m.Children) > 0 {
+		for iNdEx := len(m.Children) - 1; iNdEx >= 0; iNdEx-- {
+			size, err := m.Children[iNdEx].MarshalToSizedBufferVT(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarint(dAtA, i, uint64(size))
+			i--
+			dAtA[i] = 0x12
+		}
+	}
+	if m.Op != 0 {
+		i = encodeVarint(dAtA, i, uint64(m.Op))
+		i--
+		dAtA[i] = 0x8
+	}
+	return len(dAtA) - i, nil
+}
+
 func encodeVarint(dAtA []byte, offset int, v uint64) int {
 	offset -= sov(v)
 	base := offset
@@ -2520,8 +4092,9 @@ func (m *ContextualizedCaveat) SizeVT() (n int) {
 	}
 	var l int
 	_ = l
-	if m.CaveatId != 0 {
-		n += 1 + sov(uint64(m.CaveatId))
+	l = len(m.CaveatName)
+	if l > 0 {
+		n += 1 + l + sov(uint64(l))
 	}
 	if m.Context != nil {
 		if size, ok := interface{}(m.Context).(interface {
@@ -2537,7 +4110,7 @@ func (m *ContextualizedCaveat) SizeVT() (n int) {
 	return n
 }
 
-func (m *Caveat) SizeVT() (n int) {
+func (m *CaveatDefinition) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
@@ -2547,9 +4120,50 @@ func (m *Caveat) SizeVT() (n int) {
 	if l > 0 {
 		n += 1 + l + sov(uint64(l))
 	}
-	l = len(m.Expression)
+	l = len(m.SerializedExpression)
 	if l > 0 {
 		n += 1 + l + sov(uint64(l))
+	}
+	if len(m.ParameterTypes) > 0 {
+		for k, v := range m.ParameterTypes {
+			_ = k
+			_ = v
+			l = 0
+			if v != nil {
+				l = v.SizeVT()
+			}
+			l += 1 + sov(uint64(l))
+			mapEntrySize := 1 + len(k) + sov(uint64(len(k))) + l
+			n += mapEntrySize + 1 + sov(uint64(mapEntrySize))
+		}
+	}
+	if m.Metadata != nil {
+		l = m.Metadata.SizeVT()
+		n += 1 + l + sov(uint64(l))
+	}
+	if m.SourcePosition != nil {
+		l = m.SourcePosition.SizeVT()
+		n += 1 + l + sov(uint64(l))
+	}
+	n += len(m.unknownFields)
+	return n
+}
+
+func (m *CaveatTypeReference) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	l = len(m.TypeName)
+	if l > 0 {
+		n += 1 + l + sov(uint64(l))
+	}
+	if len(m.ChildTypes) > 0 {
+		for _, e := range m.ChildTypes {
+			l = e.SizeVT()
+			n += 1 + l + sov(uint64(l))
+		}
 	}
 	n += len(m.unknownFields)
 	return n
@@ -2639,6 +4253,10 @@ func (m *RelationTupleTreeNode) SizeVT() (n int) {
 		l = m.Expanded.SizeVT()
 		n += 1 + l + sov(uint64(l))
 	}
+	if m.CaveatExpression != nil {
+		l = m.CaveatExpression.SizeVT()
+		n += 1 + l + sov(uint64(l))
+	}
 	n += len(m.unknownFields)
 	return n
 }
@@ -2681,6 +4299,24 @@ func (m *SetOperationUserset) SizeVT() (n int) {
 			l = e.SizeVT()
 			n += 1 + l + sov(uint64(l))
 		}
+	}
+	n += len(m.unknownFields)
+	return n
+}
+
+func (m *DirectSubject) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Subject != nil {
+		l = m.Subject.SizeVT()
+		n += 1 + l + sov(uint64(l))
+	}
+	if m.CaveatExpression != nil {
+		l = m.CaveatExpression.SizeVT()
+		n += 1 + l + sov(uint64(l))
 	}
 	n += len(m.unknownFields)
 	return n
@@ -2917,6 +4553,10 @@ func (m *AllowedRelation) SizeVT() (n int) {
 		l = m.SourcePosition.SizeVT()
 		n += 1 + l + sov(uint64(l))
 	}
+	if m.RequiredCaveat != nil {
+		l = m.RequiredCaveat.SizeVT()
+		n += 1 + l + sov(uint64(l))
+	}
 	n += len(m.unknownFields)
 	return n
 }
@@ -2943,6 +4583,20 @@ func (m *AllowedRelation_PublicWildcard_) SizeVT() (n int) {
 	}
 	return n
 }
+func (m *AllowedCaveat) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	l = len(m.CaveatName)
+	if l > 0 {
+		n += 1 + l + sov(uint64(l))
+	}
+	n += len(m.unknownFields)
+	return n
+}
+
 func (m *UsersetRewrite) SizeVT() (n int) {
 	if m == nil {
 		return 0
@@ -3189,6 +4843,62 @@ func (m *SourcePosition) SizeVT() (n int) {
 	return n
 }
 
+func (m *CaveatExpression) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if vtmsg, ok := m.OperationOrCaveat.(interface{ SizeVT() int }); ok {
+		n += vtmsg.SizeVT()
+	}
+	n += len(m.unknownFields)
+	return n
+}
+
+func (m *CaveatExpression_Operation) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Operation != nil {
+		l = m.Operation.SizeVT()
+		n += 1 + l + sov(uint64(l))
+	}
+	return n
+}
+func (m *CaveatExpression_Caveat) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Caveat != nil {
+		l = m.Caveat.SizeVT()
+		n += 1 + l + sov(uint64(l))
+	}
+	return n
+}
+func (m *CaveatOperation) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Op != 0 {
+		n += 1 + sov(uint64(m.Op))
+	}
+	if len(m.Children) > 0 {
+		for _, e := range m.Children {
+			l = e.SizeVT()
+			n += 1 + l + sov(uint64(l))
+		}
+	}
+	n += len(m.unknownFields)
+	return n
+}
+
 func sov(x uint64) (n int) {
 	return (bits.Len64(x|1) + 6) / 7
 }
@@ -3384,10 +5094,10 @@ func (m *ContextualizedCaveat) UnmarshalVT(dAtA []byte) error {
 		}
 		switch fieldNum {
 		case 1:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field CaveatId", wireType)
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field CaveatName", wireType)
 			}
-			m.CaveatId = 0
+			var stringLen uint64
 			for shift := uint(0); ; shift += 7 {
 				if shift >= 64 {
 					return ErrIntOverflow
@@ -3397,11 +5107,24 @@ func (m *ContextualizedCaveat) UnmarshalVT(dAtA []byte) error {
 				}
 				b := dAtA[iNdEx]
 				iNdEx++
-				m.CaveatId |= uint64(b&0x7F) << shift
+				stringLen |= uint64(b&0x7F) << shift
 				if b < 0x80 {
 					break
 				}
 			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.CaveatName = string(dAtA[iNdEx:postIndex])
+			iNdEx = postIndex
 		case 2:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field Context", wireType)
@@ -3468,7 +5191,7 @@ func (m *ContextualizedCaveat) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-func (m *Caveat) UnmarshalVT(dAtA []byte) error {
+func (m *CaveatDefinition) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
 	for iNdEx < l {
@@ -3491,10 +5214,10 @@ func (m *Caveat) UnmarshalVT(dAtA []byte) error {
 		fieldNum := int32(wire >> 3)
 		wireType := int(wire & 0x7)
 		if wireType == 4 {
-			return fmt.Errorf("proto: Caveat: wiretype end group for non-group")
+			return fmt.Errorf("proto: CaveatDefinition: wiretype end group for non-group")
 		}
 		if fieldNum <= 0 {
-			return fmt.Errorf("proto: Caveat: illegal tag %d (wire type %d)", fieldNum, wire)
+			return fmt.Errorf("proto: CaveatDefinition: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
 		case 1:
@@ -3531,7 +5254,7 @@ func (m *Caveat) UnmarshalVT(dAtA []byte) error {
 			iNdEx = postIndex
 		case 2:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Expression", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field SerializedExpression", wireType)
 			}
 			var byteLen int
 			for shift := uint(0); ; shift += 7 {
@@ -3558,9 +5281,327 @@ func (m *Caveat) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.Expression = append(m.Expression[:0], dAtA[iNdEx:postIndex]...)
-			if m.Expression == nil {
-				m.Expression = []byte{}
+			m.SerializedExpression = append(m.SerializedExpression[:0], dAtA[iNdEx:postIndex]...)
+			if m.SerializedExpression == nil {
+				m.SerializedExpression = []byte{}
+			}
+			iNdEx = postIndex
+		case 3:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field ParameterTypes", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.ParameterTypes == nil {
+				m.ParameterTypes = make(map[string]*CaveatTypeReference)
+			}
+			var mapkey string
+			var mapvalue *CaveatTypeReference
+			for iNdEx < postIndex {
+				entryPreIndex := iNdEx
+				var wire uint64
+				for shift := uint(0); ; shift += 7 {
+					if shift >= 64 {
+						return ErrIntOverflow
+					}
+					if iNdEx >= l {
+						return io.ErrUnexpectedEOF
+					}
+					b := dAtA[iNdEx]
+					iNdEx++
+					wire |= uint64(b&0x7F) << shift
+					if b < 0x80 {
+						break
+					}
+				}
+				fieldNum := int32(wire >> 3)
+				if fieldNum == 1 {
+					var stringLenmapkey uint64
+					for shift := uint(0); ; shift += 7 {
+						if shift >= 64 {
+							return ErrIntOverflow
+						}
+						if iNdEx >= l {
+							return io.ErrUnexpectedEOF
+						}
+						b := dAtA[iNdEx]
+						iNdEx++
+						stringLenmapkey |= uint64(b&0x7F) << shift
+						if b < 0x80 {
+							break
+						}
+					}
+					intStringLenmapkey := int(stringLenmapkey)
+					if intStringLenmapkey < 0 {
+						return ErrInvalidLength
+					}
+					postStringIndexmapkey := iNdEx + intStringLenmapkey
+					if postStringIndexmapkey < 0 {
+						return ErrInvalidLength
+					}
+					if postStringIndexmapkey > l {
+						return io.ErrUnexpectedEOF
+					}
+					mapkey = string(dAtA[iNdEx:postStringIndexmapkey])
+					iNdEx = postStringIndexmapkey
+				} else if fieldNum == 2 {
+					var mapmsglen int
+					for shift := uint(0); ; shift += 7 {
+						if shift >= 64 {
+							return ErrIntOverflow
+						}
+						if iNdEx >= l {
+							return io.ErrUnexpectedEOF
+						}
+						b := dAtA[iNdEx]
+						iNdEx++
+						mapmsglen |= int(b&0x7F) << shift
+						if b < 0x80 {
+							break
+						}
+					}
+					if mapmsglen < 0 {
+						return ErrInvalidLength
+					}
+					postmsgIndex := iNdEx + mapmsglen
+					if postmsgIndex < 0 {
+						return ErrInvalidLength
+					}
+					if postmsgIndex > l {
+						return io.ErrUnexpectedEOF
+					}
+					mapvalue = &CaveatTypeReference{}
+					if err := mapvalue.UnmarshalVT(dAtA[iNdEx:postmsgIndex]); err != nil {
+						return err
+					}
+					iNdEx = postmsgIndex
+				} else {
+					iNdEx = entryPreIndex
+					skippy, err := skip(dAtA[iNdEx:])
+					if err != nil {
+						return err
+					}
+					if (skippy < 0) || (iNdEx+skippy) < 0 {
+						return ErrInvalidLength
+					}
+					if (iNdEx + skippy) > postIndex {
+						return io.ErrUnexpectedEOF
+					}
+					iNdEx += skippy
+				}
+			}
+			m.ParameterTypes[mapkey] = mapvalue
+			iNdEx = postIndex
+		case 4:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Metadata", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.Metadata == nil {
+				m.Metadata = &Metadata{}
+			}
+			if err := m.Metadata.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 5:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field SourcePosition", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.SourcePosition == nil {
+				m.SourcePosition = &SourcePosition{}
+			}
+			if err := m.SourcePosition.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := skip(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return ErrInvalidLength
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *CaveatTypeReference) UnmarshalVT(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflow
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: CaveatTypeReference: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: CaveatTypeReference: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field TypeName", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.TypeName = string(dAtA[iNdEx:postIndex])
+			iNdEx = postIndex
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field ChildTypes", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.ChildTypes = append(m.ChildTypes, &CaveatTypeReference{})
+			if err := m.ChildTypes[len(m.ChildTypes)-1].UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+				return err
 			}
 			iNdEx = postIndex
 		default:
@@ -4183,6 +6224,42 @@ func (m *RelationTupleTreeNode) UnmarshalVT(dAtA []byte) error {
 				return err
 			}
 			iNdEx = postIndex
+		case 4:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field CaveatExpression", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.CaveatExpression == nil {
+				m.CaveatExpression = &CaveatExpression{}
+			}
+			if err := m.CaveatExpression.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
 			skippy, err := skip(dAtA[iNdEx:])
@@ -4309,6 +6386,129 @@ func (m *SetOperationUserset) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
+func (m *DirectSubject) UnmarshalVT(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflow
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: DirectSubject: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: DirectSubject: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Subject", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.Subject == nil {
+				m.Subject = &ObjectAndRelation{}
+			}
+			if err := m.Subject.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field CaveatExpression", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.CaveatExpression == nil {
+				m.CaveatExpression = &CaveatExpression{}
+			}
+			if err := m.CaveatExpression.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := skip(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return ErrInvalidLength
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
 func (m *DirectSubjects) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -4367,7 +6567,7 @@ func (m *DirectSubjects) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.Subjects = append(m.Subjects, &ObjectAndRelation{})
+			m.Subjects = append(m.Subjects, &DirectSubject{})
 			if err := m.Subjects[len(m.Subjects)-1].UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}
@@ -5892,6 +8092,125 @@ func (m *AllowedRelation) UnmarshalVT(dAtA []byte) error {
 				return err
 			}
 			iNdEx = postIndex
+		case 6:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field RequiredCaveat", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.RequiredCaveat == nil {
+				m.RequiredCaveat = &AllowedCaveat{}
+			}
+			if err := m.RequiredCaveat.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := skip(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return ErrInvalidLength
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *AllowedCaveat) UnmarshalVT(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflow
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: AllowedCaveat: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: AllowedCaveat: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field CaveatName", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.CaveatName = string(dAtA[iNdEx:postIndex])
+			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
 			skippy, err := skip(dAtA[iNdEx:])
@@ -7126,6 +9445,243 @@ func (m *SourcePosition) UnmarshalVT(dAtA []byte) error {
 					break
 				}
 			}
+		default:
+			iNdEx = preIndex
+			skippy, err := skip(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return ErrInvalidLength
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *CaveatExpression) UnmarshalVT(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflow
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: CaveatExpression: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: CaveatExpression: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Operation", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if oneof, ok := m.OperationOrCaveat.(*CaveatExpression_Operation); ok {
+				if err := oneof.Operation.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+					return err
+				}
+			} else {
+				v := &CaveatOperation{}
+				if err := v.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+					return err
+				}
+				m.OperationOrCaveat = &CaveatExpression_Operation{Operation: v}
+			}
+			iNdEx = postIndex
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Caveat", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if oneof, ok := m.OperationOrCaveat.(*CaveatExpression_Caveat); ok {
+				if err := oneof.Caveat.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+					return err
+				}
+			} else {
+				v := &ContextualizedCaveat{}
+				if err := v.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+					return err
+				}
+				m.OperationOrCaveat = &CaveatExpression_Caveat{Caveat: v}
+			}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := skip(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return ErrInvalidLength
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *CaveatOperation) UnmarshalVT(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflow
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: CaveatOperation: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: CaveatOperation: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Op", wireType)
+			}
+			m.Op = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.Op |= CaveatOperation_Operation(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Children", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.Children = append(m.Children, &CaveatExpression{})
+			if err := m.Children[len(m.Children)-1].UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
 			skippy, err := skip(dAtA[iNdEx:])

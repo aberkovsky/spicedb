@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/authzed/spicedb/pkg/caveats/types"
 )
 
 func TestCompile(t *testing.T) {
@@ -46,139 +48,139 @@ func TestCompile(t *testing.T) {
 		},
 		{
 			"type mismatch",
-			mustEnvForVariables(map[string]VariableType{
-				"a": UIntType,
-				"b": BooleanType,
+			MustEnvForVariables(map[string]types.VariableType{
+				"a": types.UIntType,
+				"b": types.BooleanType,
 			}),
 			"a + b",
 			[]string{"found no matching overload for '_+_'"},
 		},
 		{
 			"valid expression",
-			mustEnvForVariables(map[string]VariableType{
-				"a": IntType,
-				"b": IntType,
+			MustEnvForVariables(map[string]types.VariableType{
+				"a": types.IntType,
+				"b": types.IntType,
 			}),
 			"a + b == 2",
 			[]string{},
 		},
 		{
 			"invalid expression over an int",
-			mustEnvForVariables(map[string]VariableType{
-				"a": UIntType,
+			MustEnvForVariables(map[string]types.VariableType{
+				"a": types.UIntType,
 			}),
 			"a[0]",
 			[]string{"found no matching overload for '_[_]'"},
 		},
 		{
 			"valid expression over a list",
-			mustEnvForVariables(map[string]VariableType{
-				"a": ListType(IntType),
+			MustEnvForVariables(map[string]types.VariableType{
+				"a": types.MustListType(types.IntType),
 			}),
 			"a[0] == 1",
 			[]string{},
 		},
 		{
 			"invalid expression over a list",
-			mustEnvForVariables(map[string]VariableType{
-				"a": ListType(UIntType),
+			MustEnvForVariables(map[string]types.VariableType{
+				"a": types.MustListType(types.UIntType),
 			}),
 			"a['hi']",
 			[]string{"found no matching overload for '_[_]'"},
 		},
 		{
 			"valid expression over a map",
-			mustEnvForVariables(map[string]VariableType{
-				"a": MapType(StringType, IntType),
+			MustEnvForVariables(map[string]types.VariableType{
+				"a": types.MustMapType(types.IntType),
 			}),
 			"a['hi'] == 1",
 			[]string{},
 		},
 		{
 			"invalid expression over a map",
-			mustEnvForVariables(map[string]VariableType{
-				"a": MapType(BooleanType, UIntType),
+			MustEnvForVariables(map[string]types.VariableType{
+				"a": types.MustMapType(types.UIntType),
 			}),
-			"a['hi']",
+			"a[42]",
 			[]string{"found no matching overload for '_[_]'"},
 		},
 		{
 			"non-boolean valid expression",
-			mustEnvForVariables(map[string]VariableType{
-				"a": IntType,
-				"b": IntType,
+			MustEnvForVariables(map[string]types.VariableType{
+				"a": types.IntType,
+				"b": types.IntType,
 			}),
 			"a + b",
 			[]string{"caveat expression must result in a boolean value: found `int`"},
 		},
 		{
 			"valid expression over a byte sequence",
-			mustEnvForVariables(map[string]VariableType{
-				"a": BytesType,
+			MustEnvForVariables(map[string]types.VariableType{
+				"a": types.BytesType,
 			}),
 			"a == b\"abc\"",
 			[]string{},
 		},
 		{
 			"invalid expression over a byte sequence",
-			mustEnvForVariables(map[string]VariableType{
-				"a": BytesType,
+			MustEnvForVariables(map[string]types.VariableType{
+				"a": types.BytesType,
 			}),
 			"a == \"abc\"",
 			[]string{"found no matching overload for '_==_'"},
 		},
 		{
 			"valid expression over a double",
-			mustEnvForVariables(map[string]VariableType{
-				"a": DoubleType,
+			MustEnvForVariables(map[string]types.VariableType{
+				"a": types.DoubleType,
 			}),
 			"a == 7.23",
 			[]string{},
 		},
 		{
 			"invalid expression over a double",
-			mustEnvForVariables(map[string]VariableType{
-				"a": DoubleType,
+			MustEnvForVariables(map[string]types.VariableType{
+				"a": types.DoubleType,
 			}),
 			"a == true",
 			[]string{"found no matching overload for '_==_'"},
 		},
 		{
 			"valid expression over a duration",
-			mustEnvForVariables(map[string]VariableType{
-				"a": DurationType,
+			MustEnvForVariables(map[string]types.VariableType{
+				"a": types.DurationType,
 			}),
 			"a > duration(\"1h3m\")",
 			[]string{},
 		},
 		{
 			"invalid expression over a duration",
-			mustEnvForVariables(map[string]VariableType{
-				"a": DurationType,
+			MustEnvForVariables(map[string]types.VariableType{
+				"a": types.DurationType,
 			}),
 			"a > \"1h3m\"",
 			[]string{"found no matching overload for '_>_'"},
 		},
 		{
 			"valid expression over a timestamp",
-			mustEnvForVariables(map[string]VariableType{
-				"a": TimestampType,
+			MustEnvForVariables(map[string]types.VariableType{
+				"a": types.TimestampType,
 			}),
 			"a == timestamp(\"1972-01-01T10:00:20.021-05:00\")",
 			[]string{},
 		},
 		{
 			"invalid expression over a timestamp",
-			mustEnvForVariables(map[string]VariableType{
-				"a": TimestampType,
+			MustEnvForVariables(map[string]types.VariableType{
+				"a": types.TimestampType,
 			}),
 			"a == \"1972-01-01T10:00:20.021-05:00\"",
 			[]string{"found no matching overload for '_==_'"},
 		},
 		{
 			"valid expression over any type",
-			mustEnvForVariables(map[string]VariableType{
-				"a": AnyType,
+			MustEnvForVariables(map[string]types.VariableType{
+				"a": types.AnyType,
 			}),
 			"a == true",
 			[]string{},
@@ -187,7 +189,7 @@ func TestCompile(t *testing.T) {
 
 	for _, tc := range tcs {
 		t.Run(tc.name, func(t *testing.T) {
-			compiled, err := CompileCaveat(tc.env, tc.exprString)
+			compiled, err := compileCaveat(tc.env, tc.exprString)
 			if len(tc.expectedErrors) == 0 {
 				require.NoError(t, err)
 				require.NotNil(t, compiled)
@@ -206,22 +208,28 @@ func TestCompile(t *testing.T) {
 	}
 }
 
+func TestDeserializeEmpty(t *testing.T) {
+	_, err := DeserializeCaveat([]byte{})
+	require.NotNil(t, err)
+}
+
 func TestSerialization(t *testing.T) {
-	exprs := []string{"a == 1", "a + b == 2", "b - a == 4"}
+	exprs := []string{"a == 1", "a + b == 2", "b - a == 4", "l.all(i, i > 42)"}
 
 	for _, expr := range exprs {
 		t.Run(expr, func(t *testing.T) {
-			env := mustEnvForVariables(map[string]VariableType{
-				"a": IntType,
-				"b": IntType,
+			env := MustEnvForVariables(map[string]types.VariableType{
+				"a": types.IntType,
+				"b": types.IntType,
+				"l": types.MustListType(types.IntType),
 			})
-			compiled, err := CompileCaveat(env, expr)
+			compiled, err := compileCaveat(env, expr)
 			require.NoError(t, err)
 
 			serialized, err := compiled.Serialize()
 			require.NoError(t, err)
 
-			deserialized, err := DeserializeCaveat(env, serialized)
+			deserialized, err := DeserializeCaveat(serialized)
 			require.NoError(t, err)
 
 			astExpr, err := deserialized.ExprString()
@@ -232,9 +240,9 @@ func TestSerialization(t *testing.T) {
 }
 
 func TestSerializeName(t *testing.T) {
-	env := mustEnvForVariables(map[string]VariableType{
-		"a": IntType,
-		"b": IntType,
+	env := MustEnvForVariables(map[string]types.VariableType{
+		"a": types.IntType,
+		"b": types.IntType,
 	})
 	compiled, err := CompileCaveatWithName(env, "a == 1", "hi")
 	require.NoError(t, err)
@@ -242,7 +250,7 @@ func TestSerializeName(t *testing.T) {
 	serialized, err := compiled.Serialize()
 	require.NoError(t, err)
 
-	deserialized, err := DeserializeCaveat(env, serialized)
+	deserialized, err := DeserializeCaveat(serialized)
 	require.NoError(t, err)
 
 	require.Equal(t, "hi", deserialized.name)

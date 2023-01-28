@@ -1,37 +1,51 @@
 package development
 
 import (
-	core "github.com/authzed/spicedb/pkg/proto/core/v1"
+	v1api "github.com/authzed/authzed-go/proto/authzed/api/v1"
 
-	v1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
+	"github.com/authzed/spicedb/internal/graph/computed"
+	v1 "github.com/authzed/spicedb/internal/services/v1"
+	core "github.com/authzed/spicedb/pkg/proto/core/v1"
+	v1dispatch "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
 )
+
+// CheckResult is the result of a RunCheck operation.
+type CheckResult struct {
+	Permissionship      v1dispatch.ResourceCheckResult_Membership
+	MissingCaveatFields []string
+	DispatchDebugInfo   *v1dispatch.DebugInformation
+	V1DebugInfo         *v1api.DebugInformation
+}
 
 // RunCheck performs a check against the data in the development context.
 //
 // Note that it is up to the caller to call DistinguishGraphError on the error
 // if they want to distinguish between user errors and internal errors.
-func RunCheck(devContext *DevContext, resource *core.ObjectAndRelation, subject *core.ObjectAndRelation) (v1.DispatchCheckResponse_Membership, error) {
+func RunCheck(devContext *DevContext, resource *core.ObjectAndRelation, subject *core.ObjectAndRelation, caveatContext map[string]any) (CheckResult, error) {
 	ctx := devContext.Ctx
-	cr, err := devContext.Dispatcher.DispatchCheck(ctx, &v1.DispatchCheckRequest{
-		ResourceRelation: &core.RelationReference{
-			Namespace: resource.Namespace,
-			Relation:  resource.Relation,
+	cr, meta, err := computed.ComputeCheck(ctx, devContext.Dispatcher,
+		computed.CheckParameters{
+			ResourceType: &core.RelationReference{
+				Namespace: resource.Namespace,
+				Relation:  resource.Relation,
+			},
+			Subject:       subject,
+			CaveatContext: caveatContext,
+			AtRevision:    devContext.Revision,
+			MaximumDepth:  maxDispatchDepth,
+			DebugOption:   computed.TraceDebuggingEnabled,
 		},
-		ResourceIds:    []string{resource.ObjectId},
-		ResultsSetting: v1.DispatchCheckRequest_ALLOW_SINGLE_RESULT,
-		Subject:        subject,
-		Metadata: &v1.ResolverMeta{
-			AtRevision:     devContext.Revision.String(),
-			DepthRemaining: maxDispatchDepth,
-		},
-	})
+		resource.ObjectId,
+	)
 	if err != nil {
-		return v1.DispatchCheckResponse_NOT_MEMBER, err
+		return CheckResult{v1dispatch.ResourceCheckResult_NOT_MEMBER, nil, nil, nil}, err
 	}
 
-	if found, ok := cr.ResultsByResourceId[resource.ObjectId]; ok {
-		return found.Membership, nil
+	reader := devContext.Datastore.SnapshotReader(devContext.Revision)
+	converted, err := v1.ConvertCheckDispatchDebugInformation(ctx, caveatContext, meta, reader)
+	if err != nil {
+		return CheckResult{v1dispatch.ResourceCheckResult_NOT_MEMBER, nil, nil, nil}, err
 	}
 
-	return v1.DispatchCheckResponse_NOT_MEMBER, nil
+	return CheckResult{cr.Membership, cr.MissingExprFields, meta.DebugInfo, converted}, nil
 }

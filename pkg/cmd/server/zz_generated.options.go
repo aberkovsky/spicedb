@@ -3,10 +3,11 @@ package server
 
 import (
 	dispatch "github.com/authzed/spicedb/internal/dispatch"
+	graph "github.com/authzed/spicedb/internal/dispatch/graph"
 	datastore "github.com/authzed/spicedb/pkg/cmd/datastore"
 	util "github.com/authzed/spicedb/pkg/cmd/util"
 	datastore1 "github.com/authzed/spicedb/pkg/datastore"
-	auth "github.com/grpc-ecosystem/go-grpc-middleware/auth"
+	auth "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/auth"
 	grpc "google.golang.org/grpc"
 	"time"
 )
@@ -41,7 +42,8 @@ func (c *Config) ToOption() ConfigOption {
 		to.SchemaPrefixesRequired = c.SchemaPrefixesRequired
 		to.DispatchServer = c.DispatchServer
 		to.DispatchMaxDepth = c.DispatchMaxDepth
-		to.DispatchConcurrencyLimit = c.DispatchConcurrencyLimit
+		to.GlobalDispatchConcurrencyLimit = c.GlobalDispatchConcurrencyLimit
+		to.DispatchConcurrencyLimits = c.DispatchConcurrencyLimits
 		to.DispatchUpstreamAddr = c.DispatchUpstreamAddr
 		to.DispatchUpstreamCAPath = c.DispatchUpstreamCAPath
 		to.DispatchClientMetricsPrefix = c.DispatchClientMetricsPrefix
@@ -50,12 +52,13 @@ func (c *Config) ToOption() ConfigOption {
 		to.DispatchCacheConfig = c.DispatchCacheConfig
 		to.ClusterDispatchCacheConfig = c.ClusterDispatchCacheConfig
 		to.DisableV1SchemaAPI = c.DisableV1SchemaAPI
+		to.V1SchemaAdditiveOnly = c.V1SchemaAdditiveOnly
 		to.MaximumUpdatesPerWrite = c.MaximumUpdatesPerWrite
 		to.MaximumPreconditionCount = c.MaximumPreconditionCount
+		to.ExperimentalCaveatsEnabled = c.ExperimentalCaveatsEnabled
 		to.DashboardAPI = c.DashboardAPI
 		to.MetricsAPI = c.MetricsAPI
-		to.UnaryMiddleware = c.UnaryMiddleware
-		to.StreamingMiddleware = c.StreamingMiddleware
+		to.MiddlewareModification = c.MiddlewareModification
 		to.DispatchUnaryMiddleware = c.DispatchUnaryMiddleware
 		to.DispatchStreamingMiddleware = c.DispatchStreamingMiddleware
 		to.SilentlyDisableTelemetry = c.SilentlyDisableTelemetry
@@ -200,10 +203,17 @@ func WithDispatchMaxDepth(dispatchMaxDepth uint32) ConfigOption {
 	}
 }
 
-// WithDispatchConcurrencyLimit returns an option that can set DispatchConcurrencyLimit on a Config
-func WithDispatchConcurrencyLimit(dispatchConcurrencyLimit uint16) ConfigOption {
+// WithGlobalDispatchConcurrencyLimit returns an option that can set GlobalDispatchConcurrencyLimit on a Config
+func WithGlobalDispatchConcurrencyLimit(globalDispatchConcurrencyLimit uint16) ConfigOption {
 	return func(c *Config) {
-		c.DispatchConcurrencyLimit = dispatchConcurrencyLimit
+		c.GlobalDispatchConcurrencyLimit = globalDispatchConcurrencyLimit
+	}
+}
+
+// WithDispatchConcurrencyLimits returns an option that can set DispatchConcurrencyLimits on a Config
+func WithDispatchConcurrencyLimits(dispatchConcurrencyLimits graph.ConcurrencyLimits) ConfigOption {
+	return func(c *Config) {
+		c.DispatchConcurrencyLimits = dispatchConcurrencyLimits
 	}
 }
 
@@ -263,6 +273,13 @@ func WithDisableV1SchemaAPI(disableV1SchemaAPI bool) ConfigOption {
 	}
 }
 
+// WithV1SchemaAdditiveOnly returns an option that can set V1SchemaAdditiveOnly on a Config
+func WithV1SchemaAdditiveOnly(v1SchemaAdditiveOnly bool) ConfigOption {
+	return func(c *Config) {
+		c.V1SchemaAdditiveOnly = v1SchemaAdditiveOnly
+	}
+}
+
 // WithMaximumUpdatesPerWrite returns an option that can set MaximumUpdatesPerWrite on a Config
 func WithMaximumUpdatesPerWrite(maximumUpdatesPerWrite uint16) ConfigOption {
 	return func(c *Config) {
@@ -274,6 +291,13 @@ func WithMaximumUpdatesPerWrite(maximumUpdatesPerWrite uint16) ConfigOption {
 func WithMaximumPreconditionCount(maximumPreconditionCount uint16) ConfigOption {
 	return func(c *Config) {
 		c.MaximumPreconditionCount = maximumPreconditionCount
+	}
+}
+
+// WithExperimentalCaveatsEnabled returns an option that can set ExperimentalCaveatsEnabled on a Config
+func WithExperimentalCaveatsEnabled(experimentalCaveatsEnabled bool) ConfigOption {
+	return func(c *Config) {
+		c.ExperimentalCaveatsEnabled = experimentalCaveatsEnabled
 	}
 }
 
@@ -291,31 +315,17 @@ func WithMetricsAPI(metricsAPI util.HTTPServerConfig) ConfigOption {
 	}
 }
 
-// WithUnaryMiddleware returns an option that can append UnaryMiddlewares to Config.UnaryMiddleware
-func WithUnaryMiddleware(unaryMiddleware grpc.UnaryServerInterceptor) ConfigOption {
+// WithMiddlewareModification returns an option that can append MiddlewareModifications to Config.MiddlewareModification
+func WithMiddlewareModification(middlewareModification MiddlewareModification) ConfigOption {
 	return func(c *Config) {
-		c.UnaryMiddleware = append(c.UnaryMiddleware, unaryMiddleware)
+		c.MiddlewareModification = append(c.MiddlewareModification, middlewareModification)
 	}
 }
 
-// SetUnaryMiddleware returns an option that can set UnaryMiddleware on a Config
-func SetUnaryMiddleware(unaryMiddleware []grpc.UnaryServerInterceptor) ConfigOption {
+// SetMiddlewareModification returns an option that can set MiddlewareModification on a Config
+func SetMiddlewareModification(middlewareModification []MiddlewareModification) ConfigOption {
 	return func(c *Config) {
-		c.UnaryMiddleware = unaryMiddleware
-	}
-}
-
-// WithStreamingMiddleware returns an option that can append StreamingMiddlewares to Config.StreamingMiddleware
-func WithStreamingMiddleware(streamingMiddleware grpc.StreamServerInterceptor) ConfigOption {
-	return func(c *Config) {
-		c.StreamingMiddleware = append(c.StreamingMiddleware, streamingMiddleware)
-	}
-}
-
-// SetStreamingMiddleware returns an option that can set StreamingMiddleware on a Config
-func SetStreamingMiddleware(streamingMiddleware []grpc.StreamServerInterceptor) ConfigOption {
-	return func(c *Config) {
-		c.StreamingMiddleware = streamingMiddleware
+		c.MiddlewareModification = middlewareModification
 	}
 }
 

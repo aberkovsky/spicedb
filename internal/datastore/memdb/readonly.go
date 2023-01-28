@@ -18,7 +18,6 @@ type txFactory func() (*memdb.Txn, error)
 type memdbReader struct {
 	TryLocker
 	txSource txFactory
-	revision datastore.Revision
 	initErr  error
 }
 
@@ -32,7 +31,7 @@ func (r *memdbReader) QueryRelationships(
 		return nil, r.initErr
 	}
 
-	r.lockOrPanic()
+	r.mustLock()
 	defer r.Unlock()
 
 	tx, err := r.txSource()
@@ -51,7 +50,8 @@ func (r *memdbReader) QueryRelationships(
 		filter.ResourceType,
 		filter.OptionalResourceIds,
 		filter.OptionalResourceRelation,
-		filter.OptionalSubjectsFilter,
+		filter.OptionalSubjectsSelectors,
+		filter.OptionalCaveatName,
 		queryOpts.Usersets,
 	)
 	filteredIterator := memdb.NewFilterIterator(bestIterator, matchingRelationshipsFilterFunc)
@@ -61,13 +61,14 @@ func (r *memdbReader) QueryRelationships(
 		limit: queryOpts.Limit,
 	}
 
-	runtime.SetFinalizer(iter, func(iter *memdbTupleIterator) {
-		if !iter.closed {
-			panic("Tuple iterator garbage collected before Close() was called")
-		}
-	})
-
+	runtime.SetFinalizer(iter, mustHaveBeenClosed)
 	return iter, nil
+}
+
+func mustHaveBeenClosed(iter *memdbTupleIterator) {
+	if !iter.closed {
+		panic("Tuple iterator garbage collected before Close() was called")
+	}
 }
 
 // ReverseQueryRelationships reads relationships starting from the subject.
@@ -80,7 +81,7 @@ func (r *memdbReader) ReverseQueryRelationships(
 		return nil, r.initErr
 	}
 
-	r.lockOrPanic()
+	r.mustLock()
 	defer r.Unlock()
 
 	tx, err := r.txSource()
@@ -109,7 +110,8 @@ func (r *memdbReader) ReverseQueryRelationships(
 		filterObjectType,
 		nil,
 		filterRelation,
-		&subjectsFilter,
+		[]datastore.SubjectsSelector{subjectsFilter.AsSelector()},
+		"",
 		nil,
 	)
 	filteredIterator := memdb.NewFilterIterator(iterator, matchingRelationshipsFilterFunc)
@@ -135,7 +137,7 @@ func (r *memdbReader) ReadNamespace(ctx context.Context, nsName string) (ns *cor
 		return nil, datastore.NoRevision, r.initErr
 	}
 
-	r.lockOrPanic()
+	r.mustLock()
 	defer r.Unlock()
 
 	tx, err := r.txSource()
@@ -168,7 +170,7 @@ func (r *memdbReader) ListNamespaces(ctx context.Context) ([]*core.NamespaceDefi
 		return nil, r.initErr
 	}
 
-	r.lockOrPanic()
+	r.mustLock()
 	defer r.Unlock()
 
 	tx, err := r.txSource()
@@ -206,7 +208,7 @@ func (r *memdbReader) LookupNamespaces(ctx context.Context, nsNames []string) ([
 		return nil, nil
 	}
 
-	r.lockOrPanic()
+	r.mustLock()
 	defer r.Unlock()
 
 	tx, err := r.txSource()
@@ -242,7 +244,7 @@ func (r *memdbReader) LookupNamespaces(ctx context.Context, nsNames []string) ([
 	return nsDefs, nil
 }
 
-func (r *memdbReader) lockOrPanic() {
+func (r *memdbReader) mustLock() {
 	if !r.TryLock() {
 		panic("detected concurrent use of ReadWriteTransaction")
 	}
@@ -268,7 +270,8 @@ func filterFuncForFilters(
 	optionalResourceType string,
 	optionalResourceIds []string,
 	optionalRelation string,
-	optionalSubjectsFilter *datastore.SubjectsFilter,
+	optionalSubjectsSelectors []datastore.SubjectsSelector,
+	optionalCaveatFilter string,
 	usersets []*core.ObjectAndRelation,
 ) memdb.FilterFunc {
 	return func(tupleRaw interface{}) bool {
@@ -281,24 +284,44 @@ func filterFuncForFilters(
 			return true
 		case optionalRelation != "" && optionalRelation != tuple.relation:
 			return true
+		case optionalCaveatFilter != "" && (tuple.caveat == nil || tuple.caveat.caveatName != optionalCaveatFilter):
+			return true
 		}
 
-		if optionalSubjectsFilter != nil {
+		applySubjectSelector := func(selector datastore.SubjectsSelector) bool {
+			switch {
+			case len(selector.OptionalSubjectType) > 0 && selector.OptionalSubjectType != tuple.subjectNamespace:
+				return false
+			case len(selector.OptionalSubjectIds) > 0 && !stringz.SliceContains(selector.OptionalSubjectIds, tuple.subjectObjectID):
+				return false
+			}
+
+			if selector.RelationFilter.OnlyNonEllipsisRelations {
+				return tuple.subjectRelation != datastore.Ellipsis
+			}
+
 			relations := make([]string, 0, 2)
-			if optionalSubjectsFilter.RelationFilter.IncludeEllipsisRelation {
+			if selector.RelationFilter.IncludeEllipsisRelation {
 				relations = append(relations, datastore.Ellipsis)
 			}
 
-			if optionalSubjectsFilter.RelationFilter.NonEllipsisRelation != "" {
-				relations = append(relations, optionalSubjectsFilter.RelationFilter.NonEllipsisRelation)
+			if selector.RelationFilter.NonEllipsisRelation != "" {
+				relations = append(relations, selector.RelationFilter.NonEllipsisRelation)
 			}
 
-			switch {
-			case optionalSubjectsFilter.SubjectType != tuple.subjectNamespace:
-				return true
-			case len(optionalSubjectsFilter.OptionalSubjectIds) > 0 && !stringz.SliceContains(optionalSubjectsFilter.OptionalSubjectIds, tuple.subjectObjectID):
-				return true
-			case len(relations) > 0 && !stringz.SliceContains(relations, tuple.subjectRelation):
+			return len(relations) == 0 || stringz.SliceContains(relations, tuple.subjectRelation)
+		}
+
+		if len(optionalSubjectsSelectors) > 0 {
+			hasMatchingSelector := false
+			for _, selector := range optionalSubjectsSelectors {
+				if applySubjectSelector(selector) {
+					hasMatchingSelector = true
+					break
+				}
+			}
+
+			if !hasMatchingSelector {
 				return true
 			}
 		}

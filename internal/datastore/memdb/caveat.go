@@ -1,126 +1,139 @@
 package memdb
 
 import (
-	"errors"
-	"time"
+	"context"
+	"fmt"
+
+	"github.com/hashicorp/go-memdb"
 
 	"github.com/authzed/spicedb/pkg/datastore"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
-
-	"github.com/hashicorp/go-memdb"
+	"github.com/authzed/spicedb/pkg/util"
 )
 
 const tableCaveats = "caveats"
 
 type caveat struct {
-	id         datastore.CaveatID
 	name       string
-	expression []byte
+	definition []byte
+	revision   datastore.Revision
 }
 
-func (c *caveat) Unwrap() *core.Caveat {
-	return &core.Caveat{
-		Name:       c.name,
-		Expression: c.expression,
-	}
+func (c *caveat) Unwrap() (*core.CaveatDefinition, error) {
+	definition := core.CaveatDefinition{}
+	err := definition.UnmarshalVT(c.definition)
+	return &definition, err
 }
 
-func (r *memdbReader) ReadCaveatByName(name string) (*core.Caveat, error) {
-	r.lockOrPanic()
+func (r *memdbReader) ReadCaveatByName(_ context.Context, name string) (*core.CaveatDefinition, datastore.Revision, error) {
+	r.mustLock()
 	defer r.Unlock()
 
 	tx, err := r.txSource()
 	if err != nil {
-		return nil, err
+		return nil, datastore.NoRevision, err
 	}
 	return r.readUnwrappedCaveatByName(tx, name)
 }
 
-func (r *memdbReader) ReadCaveatByID(ID datastore.CaveatID) (*core.Caveat, error) {
-	r.lockOrPanic()
+func (r *memdbReader) readCaveatByName(tx *memdb.Txn, name string) (*caveat, datastore.Revision, error) {
+	found, err := tx.First(tableCaveats, indexID, name)
+	if err != nil {
+		return nil, datastore.NoRevision, err
+	}
+	if found == nil {
+		return nil, datastore.NoRevision, datastore.NewCaveatNameNotFoundErr(name)
+	}
+	cvt := found.(*caveat)
+	return cvt, cvt.revision, nil
+}
+
+func (r *memdbReader) readUnwrappedCaveatByName(tx *memdb.Txn, name string) (*core.CaveatDefinition, datastore.Revision, error) {
+	c, rev, err := r.readCaveatByName(tx, name)
+	if err != nil {
+		return nil, datastore.NoRevision, err
+	}
+	unwrapped, err := c.Unwrap()
+	if err != nil {
+		return nil, datastore.NoRevision, err
+	}
+	return unwrapped, rev, nil
+}
+
+func (r *memdbReader) ListCaveats(_ context.Context, caveatNames ...string) ([]*core.CaveatDefinition, error) {
+	r.mustLock()
 	defer r.Unlock()
 
 	tx, err := r.txSource()
 	if err != nil {
 		return nil, err
 	}
-	return r.readCaveatByID(tx, ID)
-}
 
-func (r *memdbReader) readCaveatByID(tx *memdb.Txn, ID datastore.CaveatID) (*core.Caveat, error) {
-	found, err := tx.First(tableCaveats, indexID, ID)
+	var caveats []*core.CaveatDefinition
+	it, err := tx.LowerBound(tableCaveats, indexID)
 	if err != nil {
 		return nil, err
 	}
-	if found == nil {
-		return nil, datastore.NewCaveatIDNotFoundErr(ID)
-	}
-	c := found.(*caveat)
-	return c.Unwrap(), nil
-}
 
-func (r *memdbReader) readCaveatByName(tx *memdb.Txn, name string) (*caveat, error) {
-	found, err := tx.First(tableCaveats, indexName, name)
-	if err != nil {
-		return nil, err
-	}
-	if found == nil {
-		return nil, datastore.NewCaveatNameNotFoundErr(name)
-	}
-	return found.(*caveat), nil
-}
-
-func (r *memdbReader) readUnwrappedCaveatByName(tx *memdb.Txn, name string) (*core.Caveat, error) {
-	c, err := r.readCaveatByName(tx, name)
-	if err != nil {
-		return nil, err
-	}
-	return c.Unwrap(), nil
-}
-
-func (rwt *memdbReadWriteTx) WriteCaveats(caveats []*core.Caveat) ([]datastore.CaveatID, error) {
-	rwt.lockOrPanic()
-	defer rwt.Unlock()
-	tx, err := rwt.txSource()
-	if err != nil {
-		return nil, err
-	}
-	return rwt.writeCaveat(tx, caveats)
-}
-
-func (rwt *memdbReadWriteTx) writeCaveat(tx *memdb.Txn, caveats []*core.Caveat) ([]datastore.CaveatID, error) {
-	ids := make([]datastore.CaveatID, 0, len(caveats))
-	for _, coreCaveat := range caveats {
-		id := datastore.CaveatID(time.Now().UnixNano())
-		c := caveat{
-			id:         id,
-			name:       coreCaveat.Name,
-			expression: coreCaveat.Expression,
+	setOfCaveats := util.NewSet(caveatNames...)
+	for foundRaw := it.Next(); foundRaw != nil; foundRaw = it.Next() {
+		rawCaveat := foundRaw.(*caveat)
+		if !setOfCaveats.IsEmpty() && !setOfCaveats.Has(rawCaveat.name) {
+			continue
 		}
-		// in order to implement upserts we need to determine the ID of the previously
-		// stored caveat
-		found, err := rwt.readCaveatByName(tx, coreCaveat.Name)
-		if err != nil && !errors.As(err, &datastore.ErrCaveatNameNotFound{}) {
+		definition, err := rawCaveat.Unwrap()
+		if err != nil {
 			return nil, err
 		}
-		if found != nil {
-			id = found.id
-			c.id = id
-		}
-		if err = tx.Insert(tableCaveats, &c); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
+		caveats = append(caveats, definition)
 	}
-	return ids, nil
+
+	return caveats, nil
 }
 
-func (rwt *memdbReadWriteTx) DeleteCaveats(caveats []*core.Caveat) error {
-	rwt.lockOrPanic()
+func (rwt *memdbReadWriteTx) WriteCaveats(ctx context.Context, caveats []*core.CaveatDefinition) error {
+	rwt.mustLock()
 	defer rwt.Unlock()
 	tx, err := rwt.txSource()
 	if err != nil {
 		return err
 	}
-	return tx.Delete(tableCaveats, caveats)
+	return rwt.writeCaveat(tx, caveats)
+}
+
+func (rwt *memdbReadWriteTx) writeCaveat(tx *memdb.Txn, caveats []*core.CaveatDefinition) error {
+	caveatNames := util.NewSet[string]()
+	for _, coreCaveat := range caveats {
+		if !caveatNames.Add(coreCaveat.Name) {
+			return fmt.Errorf("duplicate caveat %s", coreCaveat.Name)
+		}
+		marshalled, err := coreCaveat.MarshalVT()
+		if err != nil {
+			return err
+		}
+		c := caveat{
+			name:       coreCaveat.Name,
+			definition: marshalled,
+			revision:   rwt.newRevision,
+		}
+		if err := tx.Insert(tableCaveats, &c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (rwt *memdbReadWriteTx) DeleteCaveats(ctx context.Context, names []string) error {
+	rwt.mustLock()
+	defer rwt.Unlock()
+	tx, err := rwt.txSource()
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if err := tx.Delete(tableCaveats, caveat{name: name}); err != nil {
+			return err
+		}
+	}
+	return nil
 }

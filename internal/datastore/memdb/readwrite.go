@@ -1,6 +1,7 @@
 package memdb
 
 import (
+	"context"
 	"fmt"
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
@@ -19,8 +20,8 @@ type memdbReadWriteTx struct {
 	newRevision datastore.Revision
 }
 
-func (rwt *memdbReadWriteTx) WriteRelationships(mutations []*core.RelationTupleUpdate) error {
-	rwt.lockOrPanic()
+func (rwt *memdbReadWriteTx) WriteRelationships(ctx context.Context, mutations []*core.RelationTupleUpdate) error {
+	rwt.mustLock()
 	defer rwt.Unlock()
 
 	tx, err := rwt.txSource()
@@ -96,15 +97,15 @@ func (rwt *memdbReadWriteTx) toCaveatReference(mutation *core.RelationTupleUpdat
 	var cr *contextualizedCaveat
 	if mutation.Tuple.Caveat != nil {
 		cr = &contextualizedCaveat{
-			caveatID: datastore.CaveatID(mutation.Tuple.Caveat.CaveatId),
-			context:  mutation.Tuple.Caveat.Context.AsMap(),
+			caveatName: mutation.Tuple.Caveat.CaveatName,
+			context:    mutation.Tuple.Caveat.Context.AsMap(),
 		}
 	}
 	return cr
 }
 
-func (rwt *memdbReadWriteTx) DeleteRelationships(filter *v1.RelationshipFilter) error {
-	rwt.lockOrPanic()
+func (rwt *memdbReadWriteTx) DeleteRelationships(ctx context.Context, filter *v1.RelationshipFilter) error {
+	rwt.mustLock()
 	defer rwt.Unlock()
 
 	tx, err := rwt.txSource()
@@ -137,8 +138,8 @@ func (rwt *memdbReadWriteTx) deleteWithLock(tx *memdb.Txn, filter *v1.Relationsh
 	return rwt.write(tx, mutations...)
 }
 
-func (rwt *memdbReadWriteTx) WriteNamespaces(newConfigs ...*core.NamespaceDefinition) error {
-	rwt.lockOrPanic()
+func (rwt *memdbReadWriteTx) WriteNamespaces(ctx context.Context, newConfigs ...*core.NamespaceDefinition) error {
+	rwt.mustLock()
 	defer rwt.Unlock()
 
 	tx, err := rwt.txSource()
@@ -163,8 +164,8 @@ func (rwt *memdbReadWriteTx) WriteNamespaces(newConfigs ...*core.NamespaceDefini
 	return nil
 }
 
-func (rwt *memdbReadWriteTx) DeleteNamespace(nsName string) error {
-	rwt.lockOrPanic()
+func (rwt *memdbReadWriteTx) DeleteNamespaces(ctx context.Context, nsNames ...string) error {
+	rwt.mustLock()
 	defer rwt.Unlock()
 
 	tx, err := rwt.txSource()
@@ -172,24 +173,26 @@ func (rwt *memdbReadWriteTx) DeleteNamespace(nsName string) error {
 		return err
 	}
 
-	foundRaw, err := tx.First(tableNamespace, indexID, nsName)
-	if err != nil {
-		return err
-	}
+	for _, nsName := range nsNames {
+		foundRaw, err := tx.First(tableNamespace, indexID, nsName)
+		if err != nil {
+			return err
+		}
 
-	if foundRaw == nil {
-		return fmt.Errorf("unable to find namespace to delete")
-	}
+		if foundRaw == nil {
+			return fmt.Errorf("unable to find namespace to delete")
+		}
 
-	if err := tx.Delete(tableNamespace, foundRaw); err != nil {
-		return err
-	}
+		if err := tx.Delete(tableNamespace, foundRaw); err != nil {
+			return err
+		}
 
-	// Delete the relationships from the namespace
-	if err := rwt.deleteWithLock(tx, &v1.RelationshipFilter{
-		ResourceType: nsName,
-	}); err != nil {
-		return fmt.Errorf("unable to delete relationships from deleted namespace: %w", err)
+		// Delete the relationships from the namespace
+		if err := rwt.deleteWithLock(tx, &v1.RelationshipFilter{
+			ResourceType: nsName,
+		}); err != nil {
+			return fmt.Errorf("unable to delete relationships from deleted namespace: %w", err)
+		}
 	}
 
 	return nil

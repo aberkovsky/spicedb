@@ -9,31 +9,24 @@ import (
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 	"github.com/google/uuid"
 	"github.com/jzelinskie/stringz"
-	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/proto"
 
+	log "github.com/authzed/spicedb/internal/logging"
 	"github.com/authzed/spicedb/pkg/datastore"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 )
 
 type spannerReadWriteTXN struct {
 	spannerReader
-	ctx        context.Context
 	spannerRWT *spanner.ReadWriteTransaction
 }
 
-func (rwt spannerReadWriteTXN) WriteRelationships(mutations []*core.RelationTupleUpdate) error {
-	ctx, span := tracer.Start(rwt.ctx, "WriteRelationships")
-	defer span.End()
-
+func (rwt spannerReadWriteTXN) WriteRelationships(ctx context.Context, mutations []*core.RelationTupleUpdate) error {
 	changeUUID := uuid.New().String()
 
 	var rowCountChange int64
 
 	for _, mutation := range mutations {
-		if mutation.Tuple.Caveat != nil {
-			panic("caveats not currently supported in Spanner datastore")
-		}
 		var txnMut *spanner.Mutation
 		var op int
 		switch mutation.Operation {
@@ -70,10 +63,7 @@ func (rwt spannerReadWriteTXN) WriteRelationships(mutations []*core.RelationTupl
 	return nil
 }
 
-func (rwt spannerReadWriteTXN) DeleteRelationships(filter *v1.RelationshipFilter) error {
-	ctx, span := tracer.Start(rwt.ctx, "DeleteRelationships")
-	defer span.End()
-
+func (rwt spannerReadWriteTXN) DeleteRelationships(ctx context.Context, filter *v1.RelationshipFilter) error {
 	err := deleteWithFilter(ctx, rwt.spannerRWT, filter)
 	if err != nil {
 		return fmt.Errorf(errUnableToDeleteRelationships, err)
@@ -129,6 +119,8 @@ func deleteWithFilter(ctx context.Context, rwt *spanner.ReadWriteTransaction, fi
 		ResourceAndRelation: &core.ObjectAndRelation{},
 		Subject:             &core.ObjectAndRelation{},
 	}
+	var caveatName spanner.NullString
+	var caveatCtx spanner.NullJSON
 
 	var changelogMutations []*spanner.Mutation
 	if err := toDelete.Do(func(row *spanner.Row) error {
@@ -139,7 +131,13 @@ func deleteWithFilter(ctx context.Context, rwt *spanner.ReadWriteTransaction, fi
 			&rel.Subject.Namespace,
 			&rel.Subject.ObjectId,
 			&rel.Subject.Relation,
+			&caveatName,
+			&caveatCtx,
 		)
+		if err != nil {
+			return err
+		}
+		rel.Caveat, err = ContextualizedCaveatFrom(caveatName, caveatCtx)
 		if err != nil {
 			return err
 		}
@@ -175,9 +173,11 @@ func deleteWithFilter(ctx context.Context, rwt *spanner.ReadWriteTransaction, fi
 	return nil
 }
 
-func upsertVals(r *core.RelationTuple) []interface{} {
+func upsertVals(r *core.RelationTuple) []any {
 	key := keyFromRelationship(r)
-	return append(key, spanner.CommitTimestamp)
+	key = append(key, spanner.CommitTimestamp)
+	key = append(key, caveatVals(r)...)
+	return key
 }
 
 func keyFromRelationship(r *core.RelationTuple) spanner.Key {
@@ -191,8 +191,8 @@ func keyFromRelationship(r *core.RelationTuple) spanner.Key {
 	}
 }
 
-func changeVals(changeUUID string, op int, r *core.RelationTuple) []interface{} {
-	return []interface{}{
+func changeVals(changeUUID string, op int, r *core.RelationTuple) []any {
+	vals := []any{
 		spanner.CommitTimestamp,
 		changeUUID,
 		op,
@@ -203,12 +203,24 @@ func changeVals(changeUUID string, op int, r *core.RelationTuple) []interface{} 
 		r.Subject.ObjectId,
 		r.Subject.Relation,
 	}
+	vals = append(vals, caveatVals(r)...)
+	return vals
 }
 
-func (rwt spannerReadWriteTXN) WriteNamespaces(newConfigs ...*core.NamespaceDefinition) error {
-	_, span := tracer.Start(rwt.ctx, "WriteNamespace")
-	defer span.End()
+func caveatVals(r *core.RelationTuple) []any {
+	if r.Caveat == nil {
+		return []any{"", nil}
+	}
+	vals := []any{r.Caveat.CaveatName}
+	if r.Caveat.Context != nil {
+		vals = append(vals, spanner.NullJSON{Value: r.Caveat.Context, Valid: true})
+	} else {
+		vals = append(vals, nil)
+	}
+	return vals
+}
 
+func (rwt spannerReadWriteTXN) WriteNamespaces(ctx context.Context, newConfigs ...*core.NamespaceDefinition) error {
 	mutations := make([]*spanner.Mutation, 0, len(newConfigs))
 	for _, newConfig := range newConfigs {
 		serialized, err := proto.Marshal(newConfig)
@@ -226,24 +238,23 @@ func (rwt spannerReadWriteTXN) WriteNamespaces(newConfigs ...*core.NamespaceDefi
 	return rwt.spannerRWT.BufferWrite(mutations)
 }
 
-func (rwt spannerReadWriteTXN) DeleteNamespace(nsName string) error {
-	ctx, span := tracer.Start(rwt.ctx, "DeleteNamespace")
-	defer span.End()
+func (rwt spannerReadWriteTXN) DeleteNamespaces(ctx context.Context, nsNames ...string) error {
+	for _, nsName := range nsNames {
+		if err := deleteWithFilter(ctx, rwt.spannerRWT, &v1.RelationshipFilter{
+			ResourceType: nsName,
+		}); err != nil {
+			return fmt.Errorf(errUnableToDeleteConfig, err)
+		}
 
-	if err := deleteWithFilter(ctx, rwt.spannerRWT, &v1.RelationshipFilter{
-		ResourceType: nsName,
-	}); err != nil {
-		return fmt.Errorf(errUnableToDeleteConfig, err)
+		err := rwt.spannerRWT.BufferWrite([]*spanner.Mutation{
+			spanner.Delete(tableNamespace, spanner.KeySetFromKeys(spanner.Key{nsName})),
+		})
+		if err != nil {
+			return fmt.Errorf(errUnableToDeleteConfig, err)
+		}
 	}
 
-	err := rwt.spannerRWT.BufferWrite([]*spanner.Mutation{
-		spanner.Delete(tableNamespace, spanner.KeySetFromKeys(spanner.Key{nsName})),
-	})
-	if err != nil {
-		return fmt.Errorf(errUnableToDeleteConfig, err)
-	}
-
-	return err
+	return nil
 }
 
 var _ datastore.ReadWriteTransaction = spannerReadWriteTXN{}

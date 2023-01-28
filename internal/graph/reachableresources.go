@@ -3,10 +3,6 @@ package graph
 import (
 	"context"
 	"fmt"
-	"sync"
-
-	"github.com/shopspring/decimal"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/authzed/spicedb/internal/datastore/options"
 	"github.com/authzed/spicedb/internal/dispatch"
@@ -15,6 +11,7 @@ import (
 	"github.com/authzed/spicedb/pkg/datastore"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 	v1 "github.com/authzed/spicedb/pkg/proto/dispatch/v1"
+	"github.com/authzed/spicedb/pkg/spiceerrors"
 	"github.com/authzed/spicedb/pkg/tuple"
 )
 
@@ -34,17 +31,7 @@ type ConcurrentReachableResources struct {
 // consumption.
 type ValidatedReachableResourcesRequest struct {
 	*v1.DispatchReachableResourcesRequest
-	Revision decimal.Decimal
-}
-
-type syncONRSet struct {
-	items sync.Map
-}
-
-func (s *syncONRSet) Add(onr *core.ObjectAndRelation) bool {
-	key := tuple.StringONR(onr)
-	_, existed := s.items.LoadOrStore(key, struct{}{})
-	return !existed
+	Revision datastore.Revision
 }
 
 func (crr *ConcurrentReachableResources) ReachableResources(
@@ -58,15 +45,22 @@ func (crr *ConcurrentReachableResources) ReachableResources(
 		return fmt.Errorf("no subjects ids given to reachable resources dispatch")
 	}
 
-	// If the resource type matches the subject type, yield directly.
+	// If the resource type matches the subject type, yield directly as a one-to-one result
+	// for each subjectID.
 	if req.SubjectRelation.Namespace == req.ResourceRelation.Namespace &&
 		req.SubjectRelation.Relation == req.ResourceRelation.Relation {
+		resources := make([]*v1.ReachableResource, 0, len(req.SubjectIds))
+		for _, subjectID := range req.SubjectIds {
+			resources = append(resources, &v1.ReachableResource{
+				ResourceId:    subjectID,
+				ResultStatus:  v1.ReachableResource_HAS_PERMISSION,
+				ForSubjectIds: []string{subjectID},
+			})
+		}
+
 		err := stream.Publish(&v1.DispatchReachableResourcesResponse{
-			Resource: &v1.ReachableResource{
-				ResourceIds:  req.SubjectIds,
-				ResultStatus: v1.ReachableResource_HAS_PERMISSION,
-			},
-			Metadata: emptyMetadata,
+			Resources: resources,
+			Metadata:  emptyMetadata,
 		})
 		if err != nil {
 			return err
@@ -90,17 +84,13 @@ func (crr *ConcurrentReachableResources) ReachableResources(
 		return err
 	}
 
-	cancelCtx, checkCancel := context.WithCancel(ctx)
-	defer checkCancel()
-
-	g, subCtx := errgroup.WithContext(cancelCtx)
-	g.SetLimit(int(crr.concurrencyLimit))
+	t := NewTaskRunner(ctx, crr.concurrencyLimit)
 
 	// For each entrypoint, load the necessary data and re-dispatch if a subproblem was found.
 	for _, entrypoint := range entrypoints {
 		switch entrypoint.EntrypointKind() {
 		case core.ReachabilityEntrypoint_RELATION_ENTRYPOINT:
-			err := crr.lookupRelationEntrypoint(subCtx, entrypoint, rg, g, reader, req, stream, dispatched)
+			err := crr.lookupRelationEntrypoint(ctx, t, entrypoint, rg, reader, req, stream, dispatched)
 			if err != nil {
 				return err
 			}
@@ -112,35 +102,52 @@ func (crr *ConcurrentReachableResources) ReachableResources(
 				Relation:  containingRelation.Relation,
 			}
 
-			err := crr.redispatchOrReport(subCtx, rewrittenSubjectRelation, req.SubjectIds, rg, g, entrypoint, stream, req, dispatched)
+			rsm := subjectIDsToResourcesMap(rewrittenSubjectRelation, req.SubjectIds)
+			drsm := rsm.filterForDispatch(dispatched)
+
+			err := crr.redispatchOrReport(
+				ctx,
+				t,
+				rewrittenSubjectRelation,
+				drsm,
+				rg,
+				entrypoint,
+				stream,
+				req,
+			)
 			if err != nil {
 				return err
 			}
 
 		case core.ReachabilityEntrypoint_TUPLESET_TO_USERSET_ENTRYPOINT:
-			err := crr.lookupTTUEntrypoint(subCtx, entrypoint, rg, g, reader, req, stream, dispatched)
+			err := crr.lookupTTUEntrypoint(ctx, t, entrypoint, rg, reader, req, stream, dispatched)
 			if err != nil {
 				return err
 			}
 
 		default:
-			panic(fmt.Sprintf("Unknown kind of entrypoint: %v", entrypoint.EntrypointKind()))
+			return spiceerrors.MustBugf("Unknown kind of entrypoint: %v", entrypoint.EntrypointKind())
 		}
 	}
 
-	return g.Wait()
+	return t.Wait()
 }
 
-func (crr *ConcurrentReachableResources) lookupRelationEntrypoint(ctx context.Context,
+func (crr *ConcurrentReachableResources) lookupRelationEntrypoint(
+	ctx context.Context,
+	t *TaskRunner,
 	entrypoint namespace.ReachabilityEntrypoint,
 	rg *namespace.ReachabilityGraph,
-	g *errgroup.Group,
 	reader datastore.Reader,
 	req ValidatedReachableResourcesRequest,
 	stream dispatch.ReachableResourcesStream,
 	dispatched *syncONRSet,
 ) error {
-	relationReference := entrypoint.DirectRelation()
+	relationReference, err := entrypoint.DirectRelation()
+	if err != nil {
+		return err
+	}
+
 	_, relTypeSystem, err := namespace.ReadNamespaceAndTypes(ctx, relationReference.Namespace, reader)
 	if err != nil {
 		return err
@@ -174,36 +181,17 @@ func (crr *ConcurrentReachableResources) lookupRelationEntrypoint(ctx context.Co
 
 	// Lookup the subjects and then redispatch/report results.
 	subjectsFilter := datastore.SubjectsFilter{
-		SubjectType: req.SubjectRelation.Namespace,
+		SubjectType:        req.SubjectRelation.Namespace,
+		OptionalSubjectIds: subjectIds,
 		RelationFilter: datastore.SubjectRelationFilter{
 			NonEllipsisRelation: req.SubjectRelation.Relation,
 		},
-		OptionalSubjectIds: subjectIds,
 	}
 
-	// Fire off a query lookup in parallel.
-	g.Go(func() error {
-		it, err := reader.ReverseQueryRelationships(
-			ctx,
-			subjectsFilter,
-			options.WithResRelation(&options.ResourceRelation{
-				Namespace: relationReference.Namespace,
-				Relation:  relationReference.Relation,
-			}),
-		)
-		if err != nil {
-			return err
-		}
-		defer it.Close()
-
-		return crr.chunkedRedispatch(it, func(resourceIdsFound []string) error {
-			return crr.redispatchOrReport(ctx, &core.RelationReference{
-				Namespace: relationReference.Namespace,
-				Relation:  relationReference.Relation,
-			}, resourceIdsFound, rg, g, entrypoint, stream, req, dispatched)
+	crr.scheduleChunkedRedispatch(t, reader, subjectsFilter, relationReference, dispatched,
+		func(ctx context.Context, drsm dispatchableResourcesSubjectMap) error {
+			return crr.redispatchOrReport(ctx, t, relationReference, drsm, rg, entrypoint, stream, req)
 		})
-	})
-
 	return nil
 }
 
@@ -214,39 +202,72 @@ func min(a, b int) int {
 	return a
 }
 
-func (crr *ConcurrentReachableResources) chunkedRedispatch(it datastore.RelationshipIterator, handler func(resourceIdsFound []string) error) error {
-	for chunkIndex := 0; /* until done with all relationships */ true; chunkIndex++ {
-		chunkSize := progressiveDispatchChunkSizes[min(chunkIndex, len(progressiveDispatchChunkSizes)-1)]
-		resourceIdsFound := make([]string, 0, chunkSize)
-		for i := 0; i < chunkSize; i++ {
-			tpl := it.Next()
+func (crr *ConcurrentReachableResources) scheduleChunkedRedispatch(
+	t *TaskRunner,
+	reader datastore.Reader,
+	subjectsFilter datastore.SubjectsFilter,
+	resourceType *core.RelationReference,
+	dispatched *syncONRSet,
+	handler func(ctx context.Context, resources dispatchableResourcesSubjectMap) error,
+) {
+	t.Schedule(func(ctx context.Context) error {
+		toBeHandled := make([]resourcesSubjectMap, 0)
+		it, err := reader.ReverseQueryRelationships(
+			ctx,
+			subjectsFilter,
+			options.WithResRelation(&options.ResourceRelation{
+				Namespace: resourceType.Namespace,
+				Relation:  resourceType.Relation,
+			}),
+		)
+		if err != nil {
+			return err
+		}
+		defer it.Close()
+
+		rsm := newResourcesSubjectMap(resourceType)
+		chunkIndex := 0
+		for tpl := it.Next(); tpl != nil; tpl = it.Next() {
+			chunkSize := progressiveDispatchChunkSizes[min(chunkIndex, len(progressiveDispatchChunkSizes)-1)]
 			if it.Err() != nil {
 				return it.Err()
 			}
 
-			if tpl == nil {
-				break
+			err := rsm.addRelationship(tpl)
+			if err != nil {
+				return err
 			}
 
-			resourceIdsFound = append(resourceIdsFound, tpl.ResourceAndRelation.ObjectId)
+			if rsm.len() == int(chunkSize) {
+				chunkIndex++
+				toBeHandled = append(toBeHandled, rsm)
+				rsm = newResourcesSubjectMap(resourceType)
+			}
+		}
+		it.Close()
+
+		if rsm.len() > 0 {
+			if rsm.len() > int(datastore.FilterMaximumIDCount) {
+				return fmt.Errorf("found reachableresources chunk in excess of expected max size")
+			}
+
+			toBeHandled = append(toBeHandled, rsm)
 		}
 
-		if len(resourceIdsFound) == 0 {
-			return nil
+		for _, rsmToHandle := range toBeHandled {
+			err := handler(ctx, rsmToHandle.filterForDispatch(dispatched))
+			if err != nil {
+				return err
+			}
 		}
-
-		err := handler(resourceIdsFound)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+		return nil
+	})
 }
 
 func (crr *ConcurrentReachableResources) lookupTTUEntrypoint(ctx context.Context,
+	t *TaskRunner,
 	entrypoint namespace.ReachabilityEntrypoint,
 	rg *namespace.ReachabilityGraph,
-	g *errgroup.Group,
 	reader datastore.Reader,
 	req ValidatedReachableResourcesRequest,
 	stream dispatch.ReachableResourcesStream,
@@ -259,7 +280,10 @@ func (crr *ConcurrentReachableResources) lookupTTUEntrypoint(ctx context.Context
 		return err
 	}
 
-	tuplesetRelation := entrypoint.TuplesetRelation()
+	tuplesetRelation, err := entrypoint.TuplesetRelation()
+	if err != nil {
+		return err
+	}
 
 	// Determine the subject relation(s) for which to search. Note that we need to do so
 	// for both `...` as well as the subject's defined relation, as either is applicable in
@@ -289,30 +313,19 @@ func (crr *ConcurrentReachableResources) lookupTTUEntrypoint(ctx context.Context
 	// Search for the resolved subjects in the tupleset of the TTU.
 	subjectsFilter := datastore.SubjectsFilter{
 		SubjectType:        req.SubjectRelation.Namespace,
-		RelationFilter:     relationFilter,
 		OptionalSubjectIds: req.SubjectIds,
+		RelationFilter:     relationFilter,
 	}
 
-	// Fire off a query lookup in parallel.
-	g.Go(func() error {
-		it, err := reader.ReverseQueryRelationships(
-			ctx,
-			subjectsFilter,
-			options.WithResRelation(&options.ResourceRelation{
-				Namespace: containingRelation.Namespace,
-				Relation:  tuplesetRelation,
-			}),
-		)
-		if err != nil {
-			return err
-		}
-		defer it.Close()
+	tuplesetRelationReference := &core.RelationReference{
+		Namespace: containingRelation.Namespace,
+		Relation:  tuplesetRelation,
+	}
 
-		return crr.chunkedRedispatch(it, func(resourceIdsFound []string) error {
-			return crr.redispatchOrReport(ctx, containingRelation, resourceIdsFound, rg, g, entrypoint, stream, req, dispatched)
+	crr.scheduleChunkedRedispatch(t, reader, subjectsFilter, tuplesetRelationReference, dispatched,
+		func(ctx context.Context, drsm dispatchableResourcesSubjectMap) error {
+			return crr.redispatchOrReport(ctx, t, containingRelation, drsm, rg, entrypoint, stream, req)
 		})
-	})
-
 	return nil
 }
 
@@ -321,32 +334,15 @@ func (crr *ConcurrentReachableResources) lookupTTUEntrypoint(ctx context.Context
 // the resource is reported to the parent stream.
 func (crr *ConcurrentReachableResources) redispatchOrReport(
 	ctx context.Context,
+	t *TaskRunner,
 	foundResourceType *core.RelationReference,
-	foundResourceIds []string,
+	foundResources dispatchableResourcesSubjectMap,
 	rg *namespace.ReachabilityGraph,
-	g *errgroup.Group,
 	entrypoint namespace.ReachabilityEntrypoint,
 	parentStream dispatch.ReachableResourcesStream,
 	parentRequest ValidatedReachableResourcesRequest,
-	dispatched *syncONRSet,
 ) error {
-	toDispatchResourceIds := make([]string, 0, len(foundResourceIds))
-
-	// Skip redispatching or checking for any resources already reported by this
-	// pass.
-	for _, resourceID := range foundResourceIds {
-		if !dispatched.Add(&core.ObjectAndRelation{
-			Namespace: foundResourceType.Namespace,
-			ObjectId:  resourceID,
-			Relation:  foundResourceType.Relation,
-		}) {
-			continue
-		}
-
-		toDispatchResourceIds = append(toDispatchResourceIds, resourceID)
-	}
-
-	if len(toDispatchResourceIds) == 0 {
+	if foundResources.isEmpty() {
 		// Nothing more to do.
 		return nil
 	}
@@ -362,17 +358,9 @@ func (crr *ConcurrentReachableResources) redispatchOrReport(
 		// If the found resource matches the target resource type and relation, yield the resource.
 		if foundResourceType.Namespace == parentRequest.ResourceRelation.Namespace &&
 			foundResourceType.Relation == parentRequest.ResourceRelation.Relation {
-			status := v1.ReachableResource_REQUIRES_CHECK
-			if entrypoint.IsDirectResult() {
-				status = v1.ReachableResource_HAS_PERMISSION
-			}
-
 			return parentStream.Publish(&v1.DispatchReachableResourcesResponse{
-				Resource: &v1.ReachableResource{
-					ResourceIds:  toDispatchResourceIds,
-					ResultStatus: status,
-				},
-				Metadata: emptyMetadata,
+				Resources: foundResources.asReachableResources(entrypoint.IsDirectResult()),
+				Metadata:  emptyMetadata,
 			})
 		}
 
@@ -381,32 +369,39 @@ func (crr *ConcurrentReachableResources) redispatchOrReport(
 	}
 
 	// Otherwise, redispatch.
-	g.Go(func() error {
+	t.Schedule(func(ctx context.Context) error {
 		stream := &dispatch.WrappedDispatchStream[*v1.DispatchReachableResourcesResponse]{
 			Stream: parentStream,
 			Ctx:    ctx,
 			Processor: func(result *v1.DispatchReachableResourcesResponse) (*v1.DispatchReachableResourcesResponse, bool, error) {
-				// If the entrypoint is not a direct result, then a check is required to determine
-				// whether the resource actually has permission.
-				status := result.Resource.ResultStatus
-				if !entrypoint.IsDirectResult() {
-					status = v1.ReachableResource_REQUIRES_CHECK
+				// If the context has been closed, nothing more to do.
+				select {
+				case <-ctx.Done():
+					return nil, false, ctx.Err()
+
+				default:
+				}
+
+				// Map the found resources via the subject+resources used for dispatching, to determine
+				// if any need to be made conditional due to caveats.
+				mapped, err := foundResources.mapFoundResources(result.Resources, entrypoint.IsDirectResult())
+				if err != nil {
+					return nil, false, err
 				}
 
 				return &v1.DispatchReachableResourcesResponse{
-					Resource: &v1.ReachableResource{
-						ResourceIds:  result.Resource.ResourceIds,
-						ResultStatus: status,
-					},
-					Metadata: addCallToResponseMetadata(result.Metadata),
+					Resources: mapped,
+					Metadata:  addCallToResponseMetadata(result.Metadata),
 				}, true, nil
 			},
 		}
 
+		// Dispatch the found resources as the subjects for the next call, to continue the
+		// resolution.
 		return crr.d.DispatchReachableResources(&v1.DispatchReachableResourcesRequest{
 			ResourceRelation: parentRequest.ResourceRelation,
 			SubjectRelation:  foundResourceType,
-			SubjectIds:       toDispatchResourceIds,
+			SubjectIds:       foundResources.resourceIDs(),
 			Metadata: &v1.ResolverMeta{
 				AtRevision:     parentRequest.Revision.String(),
 				DepthRemaining: parentRequest.Metadata.DepthRemaining - 1,

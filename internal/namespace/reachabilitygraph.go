@@ -3,6 +3,7 @@ package namespace
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
@@ -31,21 +32,21 @@ func (re ReachabilityEntrypoint) EntrypointKind() core.ReachabilityEntrypoint_Re
 }
 
 // TuplesetRelation returns the tupleset relation of the TTU, if a TUPLESET_TO_USERSET_ENTRYPOINT.
-func (re ReachabilityEntrypoint) TuplesetRelation() string {
+func (re ReachabilityEntrypoint) TuplesetRelation() (string, error) {
 	if re.EntrypointKind() != core.ReachabilityEntrypoint_TUPLESET_TO_USERSET_ENTRYPOINT {
-		panic(fmt.Sprintf("cannot call TupleToUserset for kind %v", re.EntrypointKind()))
+		return "", fmt.Errorf("cannot call TupleToUserset for kind %v", re.EntrypointKind())
 	}
 
-	return re.re.TuplesetRelation
+	return re.re.TuplesetRelation, nil
 }
 
 // DirectRelation is the relation that this entrypoint represents, if a RELATION_ENTRYPOINT.
-func (re ReachabilityEntrypoint) DirectRelation() *core.RelationReference {
+func (re ReachabilityEntrypoint) DirectRelation() (*core.RelationReference, error) {
 	if re.EntrypointKind() != core.ReachabilityEntrypoint_RELATION_ENTRYPOINT {
-		panic(fmt.Sprintf("cannot call DirectRelation for kind %v", re.EntrypointKind()))
+		return nil, fmt.Errorf("cannot call DirectRelation for kind %v", re.EntrypointKind())
 	}
 
-	return re.re.TargetRelation
+	return re.re.TargetRelation, nil
 }
 
 // ContainingRelationOrPermission is the relation or permission containing this entrypoint.
@@ -100,11 +101,12 @@ func (rg *ReachabilityGraph) HasOptimizedEntrypointsForSubjectToResource(
 	subjectType *core.RelationReference,
 	resourceType *core.RelationReference,
 ) (bool, error) {
-	cacheKey := fmt.Sprintf("%s#%s=>%s#%s", subjectType.Namespace, subjectType.Relation, resourceType.Namespace, resourceType.Relation)
+	cacheKey := tuple.StringRR(subjectType) + "=>" + tuple.StringRR(resourceType)
 	if result, ok := rg.hasOptimizedEntrypointCache.Load(cacheKey); ok {
 		return result.(bool), nil
 	}
 
+	// TODO(jzelinskie): measure to see if it's worth singleflighting this
 	found, err := rg.entrypointsForSubjectToResource(ctx, subjectType, resourceType, reachabilityOptimized, entrypointLookupFindOne)
 	if err != nil {
 		return false, err
@@ -141,18 +143,18 @@ func (rg *ReachabilityGraph) entrypointsForSubjectToResource(
 func (rg *ReachabilityGraph) getOrBuildGraph(ctx context.Context, resourceType *core.RelationReference, reachabilityOption reachabilityOption) (*core.ReachabilityGraph, error) {
 	// Check the cache.
 	// TODO(jschorr): Move this to a global cache.
-	cacheKey := fmt.Sprintf("%s#%s-%v", resourceType.Namespace, resourceType.Relation, reachabilityOption)
+	cacheKey := tuple.StringRR(resourceType) + "-" + strconv.Itoa(int(reachabilityOption))
 	if cached, ok := rg.cachedGraphs.Load(cacheKey); ok {
 		return cached.(*core.ReachabilityGraph), nil
 	}
 
 	// Load the type system for the target resource relation.
-	namespace, err := rg.ts.lookupNamespace(ctx, resourceType.Namespace)
+	namespace, err := rg.ts.resolver.LookupNamespace(ctx, resourceType.Namespace)
 	if err != nil {
 		return nil, err
 	}
 
-	rts, err := BuildNamespaceTypeSystem(namespace, rg.ts.lookupNamespace)
+	rts, err := NewNamespaceTypeSystem(namespace, rg.ts.resolver)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +178,7 @@ func (rg *ReachabilityGraph) collectEntrypoints(
 	entrypointLookupOption entrypointLookupOption,
 ) error {
 	// Ensure that we only process each relation once.
-	key := relationKey(resourceType.Namespace, resourceType.Relation)
+	key := tuple.JoinRelRef(resourceType.Namespace, resourceType.Relation)
 	if _, ok := encounteredRelations[key]; ok {
 		return nil
 	}
@@ -199,7 +201,7 @@ func (rg *ReachabilityGraph) collectEntrypoints(
 	}
 
 	// Add subject relation entrypoints.
-	subjectRelationEntrypoints, ok := rrg.EntrypointsBySubjectRelation[relationKey(subjectType.Namespace, subjectType.Relation)]
+	subjectRelationEntrypoints, ok := rrg.EntrypointsBySubjectRelation[tuple.JoinRelRef(subjectType.Namespace, subjectType.Relation)]
 	if ok {
 		addEntrypoints(subjectRelationEntrypoints, resourceType, collected)
 	}

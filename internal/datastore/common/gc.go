@@ -4,9 +4,12 @@ import (
 	"context"
 	"time"
 
+	"github.com/cenkalti/backoff/v4"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
+
+	log "github.com/authzed/spicedb/internal/logging"
+	"github.com/authzed/spicedb/pkg/datastore"
 )
 
 var (
@@ -62,8 +65,8 @@ func RegisterGCMetrics() error {
 type GarbageCollector interface {
 	IsReady(context.Context) (bool, error)
 	Now(context.Context) (time.Time, error)
-	TxIDBefore(context.Context, time.Time) (uint64, error)
-	DeleteBeforeTx(ctx context.Context, txID uint64) (DeletionCounts, error)
+	TxIDBefore(context.Context, time.Time) (datastore.Revision, error)
+	DeleteBeforeTx(ctx context.Context, txID datastore.Revision) (DeletionCounts, error)
 }
 
 // DeletionCounts tracks the amount of deletions that occurred when calling
@@ -81,12 +84,20 @@ func (g DeletionCounts) MarshalZerologObject(e *zerolog.Event) {
 		Int64("namespaces", g.Namespaces)
 }
 
+var MaxGCInterval = 60 * time.Minute
+
 // StartGarbageCollector loops forever until the context is canceled and
 // performs garbage collection on the provided interval.
 func StartGarbageCollector(ctx context.Context, gc GarbageCollector, interval, window, timeout time.Duration) error {
 	log.Ctx(ctx).Info().
 		Dur("interval", interval).
 		Msg("datastore garbage collection worker started")
+
+	backoffInterval := backoff.NewExponentialBackOff()
+	backoffInterval.InitialInterval = interval
+	backoffInterval.MaxElapsedTime = maxDuration(MaxGCInterval, interval)
+
+	nextInterval := interval
 
 	for {
 		select {
@@ -95,17 +106,32 @@ func StartGarbageCollector(ctx context.Context, gc GarbageCollector, interval, w
 				Msg("shutting down datastore garbage collection worker")
 			return ctx.Err()
 
-		case <-time.After(interval):
-			err := collect(gc, window, timeout)
+		case <-time.After(nextInterval):
+			err := RunGarbageCollection(gc, window, timeout)
 			if err != nil {
+				nextInterval = backoffInterval.NextBackOff()
 				log.Ctx(ctx).Warn().Err(err).
+					Dur("next-attempt-in", nextInterval).
 					Msg("error attempting to perform garbage collection")
+				continue
 			}
+			backoffInterval.Reset()
+			log.Ctx(ctx).Debug().
+				Dur("next-run-in", interval).
+				Msg("datastore garbage collection completed successfully")
 		}
 	}
 }
 
-func collect(gc GarbageCollector, window, timeout time.Duration) error {
+func maxDuration(d1 time.Duration, d2 time.Duration) time.Duration {
+	if d1 > d2 {
+		return d1
+	}
+	return d2
+}
+
+// RunGarbageCollection runs garbage collection for the datastore.
+func RunGarbageCollection(gc GarbageCollector, window, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -123,7 +149,7 @@ func collect(gc GarbageCollector, window, timeout time.Duration) error {
 	var (
 		startTime = time.Now()
 		collected DeletionCounts
-		watermark uint64
+		watermark datastore.Revision
 	)
 
 	defer func() {
@@ -131,7 +157,7 @@ func collect(gc GarbageCollector, window, timeout time.Duration) error {
 		gcDurationHistogram.Observe(collectionDuration.Seconds())
 
 		log.Ctx(ctx).Debug().
-			Uint64("highestTxID", watermark).
+			Stringer("highestTxID", watermark).
 			Dur("duration", collectionDuration).
 			Interface("collected", collected).
 			Msg("datastore garbage collection completed")

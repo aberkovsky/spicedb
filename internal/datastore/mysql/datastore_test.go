@@ -1,5 +1,5 @@
-//go:build ci
-// +build ci
+//go:build ci && docker
+// +build ci,docker
 
 package mysql
 
@@ -38,7 +38,7 @@ type datastoreTester struct {
 
 func (dst *datastoreTester) createDatastore(revisionQuantization, gcWindow time.Duration, _ uint16) (datastore.Datastore, error) {
 	ds := dst.b.NewDatastore(dst.t, func(engine, uri string) datastore.Datastore {
-		ds, err := NewMySQLDatastore(uri,
+		ds, err := newMySQLDatastore(uri,
 			RevisionQuantization(revisionQuantization),
 			GCWindow(gcWindow),
 			GCInterval(0*time.Second),
@@ -71,7 +71,7 @@ type datastoreTestFunc func(t *testing.T, ds datastore.Datastore)
 func createDatastoreTest(b testdatastore.RunningEngineForTest, tf datastoreTestFunc, options ...Option) func(*testing.T) {
 	return func(t *testing.T) {
 		ds := b.NewDatastore(t, func(engine, uri string) datastore.Datastore {
-			ds, err := NewMySQLDatastore(uri, options...)
+			ds, err := newMySQLDatastore(uri, options...)
 			require.NoError(t, err)
 			return ds
 		})
@@ -152,11 +152,12 @@ func GarbageCollectionTest(t *testing.T, ds datastore.Datastore) {
 	req.True(ok)
 
 	// Write basic namespaces.
-	writtenAt, err := ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
+	writtenAt, err := ds.ReadWriteTx(ctx, func(rwt datastore.ReadWriteTransaction) error {
 		return rwt.WriteNamespaces(
+			ctx,
 			namespace.Namespace(
 				"resource",
-				namespace.Relation("reader", nil),
+				namespace.MustRelation("reader", nil),
 			),
 			namespace.Namespace("user"),
 		)
@@ -166,18 +167,19 @@ func GarbageCollectionTest(t *testing.T, ds datastore.Datastore) {
 	// Run GC at the transaction and ensure no relationships are removed.
 	mds := ds.(*Datastore)
 
-	removed, err := mds.DeleteBeforeTx(ctx, uint64(writtenAt.IntPart()))
+	removed, err := mds.DeleteBeforeTx(ctx, writtenAt)
 	req.NoError(err)
 	req.Zero(removed.Relationships)
 	req.Zero(removed.Namespaces)
 
 	// Replace the namespace with a new one.
-	writtenAt, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
+	writtenAt, err = ds.ReadWriteTx(ctx, func(rwt datastore.ReadWriteTransaction) error {
 		return rwt.WriteNamespaces(
+			ctx,
 			namespace.Namespace(
 				"resource",
-				namespace.Relation("reader", nil),
-				namespace.Relation("unused", nil),
+				namespace.MustRelation("reader", nil),
+				namespace.MustRelation("unused", nil),
 			),
 			namespace.Namespace("user"),
 		)
@@ -185,7 +187,7 @@ func GarbageCollectionTest(t *testing.T, ds datastore.Datastore) {
 	req.NoError(err)
 
 	// Run GC to remove the old namespace
-	removed, err = mds.DeleteBeforeTx(ctx, uint64(writtenAt.IntPart()))
+	removed, err = mds.DeleteBeforeTx(ctx, writtenAt)
 	req.NoError(err)
 	req.Zero(removed.Relationships)
 	req.Equal(int64(1), removed.Transactions)
@@ -198,14 +200,14 @@ func GarbageCollectionTest(t *testing.T, ds datastore.Datastore) {
 	req.NoError(err)
 
 	// Run GC at the transaction and ensure no relationships are removed, but 1 transaction (the previous write namespace) is.
-	removed, err = mds.DeleteBeforeTx(ctx, uint64(relWrittenAt.IntPart()))
+	removed, err = mds.DeleteBeforeTx(ctx, relWrittenAt)
 	req.NoError(err)
 	req.Zero(removed.Relationships)
 	req.Equal(int64(1), removed.Transactions)
 	req.Zero(removed.Namespaces)
 
 	// Run GC again and ensure there are no changes.
-	removed, err = mds.DeleteBeforeTx(ctx, uint64(relWrittenAt.IntPart()))
+	removed, err = mds.DeleteBeforeTx(ctx, relWrittenAt)
 	req.NoError(err)
 	req.Zero(removed.Relationships)
 	req.Zero(removed.Transactions)
@@ -220,14 +222,14 @@ func GarbageCollectionTest(t *testing.T, ds datastore.Datastore) {
 	req.NoError(err)
 
 	// Run GC at the transaction and ensure the (older copy of the) relationship is removed, as well as 1 transaction (the write).
-	removed, err = mds.DeleteBeforeTx(ctx, uint64(relOverwrittenAt.IntPart()))
+	removed, err = mds.DeleteBeforeTx(ctx, relOverwrittenAt)
 	req.NoError(err)
 	req.Equal(int64(1), removed.Relationships)
 	req.Equal(int64(1), removed.Transactions)
 	req.Zero(removed.Namespaces)
 
 	// Run GC again and ensure there are no changes.
-	removed, err = mds.DeleteBeforeTx(ctx, uint64(relOverwrittenAt.IntPart()))
+	removed, err = mds.DeleteBeforeTx(ctx, relOverwrittenAt)
 	req.NoError(err)
 	req.Zero(removed.Relationships)
 	req.Zero(removed.Transactions)
@@ -244,14 +246,14 @@ func GarbageCollectionTest(t *testing.T, ds datastore.Datastore) {
 	tRequire.NoTupleExists(ctx, tpl, relDeletedAt)
 
 	// Run GC at the transaction and ensure the relationship is removed, as well as 1 transaction (the overwrite).
-	removed, err = mds.DeleteBeforeTx(ctx, uint64(relDeletedAt.IntPart()))
+	removed, err = mds.DeleteBeforeTx(ctx, relDeletedAt)
 	req.NoError(err)
 	req.Equal(int64(1), removed.Relationships)
 	req.Equal(int64(1), removed.Transactions)
 	req.Zero(removed.Namespaces)
 
 	// Run GC again and ensure there are no changes.
-	removed, err = mds.DeleteBeforeTx(ctx, uint64(relDeletedAt.IntPart()))
+	removed, err = mds.DeleteBeforeTx(ctx, relDeletedAt)
 	req.NoError(err)
 	req.Zero(removed.Relationships)
 	req.Zero(removed.Transactions)
@@ -269,7 +271,7 @@ func GarbageCollectionTest(t *testing.T, ds datastore.Datastore) {
 
 	// Run GC at the transaction and ensure the older copies of the relationships are removed,
 	// as well as the 2 older write transactions and the older delete transaction.
-	removed, err = mds.DeleteBeforeTx(ctx, uint64(relLastWriteAt.IntPart()))
+	removed, err = mds.DeleteBeforeTx(ctx, relLastWriteAt)
 	req.NoError(err)
 	req.Equal(int64(2), removed.Relationships)
 	req.Equal(int64(3), removed.Transactions)
@@ -288,11 +290,12 @@ func GarbageCollectionByTimeTest(t *testing.T, ds datastore.Datastore) {
 	req.True(ok)
 
 	// Write basic namespaces.
-	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
+	_, err = ds.ReadWriteTx(ctx, func(rwt datastore.ReadWriteTransaction) error {
 		return rwt.WriteNamespaces(
+			ctx,
 			namespace.Namespace(
 				"resource",
-				namespace.Relation("reader", nil),
+				namespace.MustRelation("reader", nil),
 			),
 			namespace.Namespace("user"),
 		)
@@ -360,11 +363,12 @@ func ChunkedGarbageCollectionTest(t *testing.T, ds datastore.Datastore) {
 	req.True(ok)
 
 	// Write basic namespaces.
-	_, err = ds.ReadWriteTx(ctx, func(ctx context.Context, rwt datastore.ReadWriteTransaction) error {
+	_, err = ds.ReadWriteTx(ctx, func(rwt datastore.ReadWriteTransaction) error {
 		return rwt.WriteNamespaces(
+			ctx,
 			namespace.Namespace(
 				"resource",
-				namespace.Relation("reader", nil),
+				namespace.MustRelation("reader", nil),
 			),
 			namespace.Namespace("user"),
 		)
@@ -479,7 +483,7 @@ func QuantizedRevisionTest(t *testing.T, b testdatastore.RunningEngineForTest) {
 			defer cancel()
 
 			ds := b.NewDatastore(t, func(engine, uri string) datastore.Datastore {
-				ds, err := NewMySQLDatastore(
+				ds, err := newMySQLDatastore(
 					uri,
 					RevisionQuantization(5*time.Second),
 					GCWindow(24*time.Hour),

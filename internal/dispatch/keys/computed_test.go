@@ -6,7 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/authzed/spicedb/internal/util"
+	"google.golang.org/protobuf/types/known/structpb"
+
+	"github.com/authzed/spicedb/pkg/util"
 
 	"github.com/stretchr/testify/require"
 
@@ -47,7 +49,21 @@ func TestStableCacheKeys(t *testing.T) {
 					},
 				}, computeBothHashes)
 			},
-			"d6a999a7a0a4d39c9f01",
+			"e09cbca18290f7afae01",
+		},
+		{
+			"basic check with canonical ordering",
+			func() DispatchCacheKey {
+				return checkRequestToKey(&v1.DispatchCheckRequest{
+					ResourceRelation: RR("document", "view"),
+					ResourceIds:      []string{"bar", "foo"},
+					Subject:          ONR("user", "tom", "..."),
+					Metadata: &v1.ResolverMeta{
+						AtRevision: "1234",
+					},
+				}, computeBothHashes)
+			},
+			"e09cbca18290f7afae01",
 		},
 		{
 			"different check",
@@ -66,7 +82,7 @@ func TestStableCacheKeys(t *testing.T) {
 		{
 			"canonical check",
 			func() DispatchCacheKey {
-				return checkRequestToKeyWithCanonical(&v1.DispatchCheckRequest{
+				key, _ := checkRequestToKeyWithCanonical(&v1.DispatchCheckRequest{
 					ResourceRelation: RR("document", "view"),
 					ResourceIds:      []string{"foo", "bar"},
 					Subject:          ONR("user", "tom", "..."),
@@ -74,8 +90,9 @@ func TestStableCacheKeys(t *testing.T) {
 						AtRevision: "1234",
 					},
 				}, "view")
+				return key
 			},
-			"be9fff86aa9aebdba801",
+			"a1ebd1d6a7a8b18fff01",
 		},
 		{
 			"expand",
@@ -101,7 +118,126 @@ func TestStableCacheKeys(t *testing.T) {
 					},
 				}, computeBothHashes)
 			},
-			"d4a1bda89c9790f50c",
+			"87b8e4dcf893f4abd701",
+		},
+		{
+			"lookup resources with nil context",
+			func() DispatchCacheKey {
+				return lookupRequestToKey(&v1.DispatchLookupRequest{
+					ObjectRelation: RR("document", "view"),
+					Subject:        ONR("user", "mariah", "..."),
+					Limit:          10,
+					Metadata: &v1.ResolverMeta{
+						AtRevision: "1234",
+					},
+					Context: nil,
+				}, computeBothHashes)
+			},
+			"87b8e4dcf893f4abd701",
+		},
+		{
+			"lookup resources with empty context",
+			func() DispatchCacheKey {
+				return lookupRequestToKey(&v1.DispatchLookupRequest{
+					ObjectRelation: RR("document", "view"),
+					Subject:        ONR("user", "mariah", "..."),
+					Limit:          10,
+					Metadata: &v1.ResolverMeta{
+						AtRevision: "1234",
+					},
+					Context: func() *structpb.Struct {
+						v, _ := structpb.NewStruct(map[string]any{})
+						return v
+					}(),
+				}, computeBothHashes)
+			},
+			"87b8e4dcf893f4abd701",
+		},
+		{
+			"lookup resources with context",
+			func() DispatchCacheKey {
+				return lookupRequestToKey(&v1.DispatchLookupRequest{
+					ObjectRelation: RR("document", "view"),
+					Subject:        ONR("user", "mariah", "..."),
+					Limit:          10,
+					Metadata: &v1.ResolverMeta{
+						AtRevision: "1234",
+					},
+					Context: func() *structpb.Struct {
+						v, _ := structpb.NewStruct(map[string]any{
+							"foo": 1,
+							"bar": true,
+						})
+						return v
+					}(),
+				}, computeBothHashes)
+			},
+			"8a9bd5bba3ba9cde9301",
+		},
+		{
+			"lookup resources with different context",
+			func() DispatchCacheKey {
+				return lookupRequestToKey(&v1.DispatchLookupRequest{
+					ObjectRelation: RR("document", "view"),
+					Subject:        ONR("user", "mariah", "..."),
+					Limit:          10,
+					Metadata: &v1.ResolverMeta{
+						AtRevision: "1234",
+					},
+					Context: func() *structpb.Struct {
+						v, _ := structpb.NewStruct(map[string]any{
+							"foo": 2,
+							"bar": true,
+						})
+						return v
+					}(),
+				}, computeBothHashes)
+			},
+			"f6db868dc194c19ade01",
+		},
+		{
+			"lookup resources with escaped string",
+			func() DispatchCacheKey {
+				return lookupRequestToKey(&v1.DispatchLookupRequest{
+					ObjectRelation: RR("document", "view"),
+					Subject:        ONR("user", "mariah", "..."),
+					Limit:          10,
+					Metadata: &v1.ResolverMeta{
+						AtRevision: "1234",
+					},
+					Context: func() *structpb.Struct {
+						v, _ := structpb.NewStruct(map[string]any{
+							"foo": "this is an `escaped` string\nhi",
+						})
+						return v
+					}(),
+				}, computeBothHashes)
+			},
+			"f98bb6f7fce8eb9ecc01",
+		},
+		{
+			"lookup resources with nested context",
+			func() DispatchCacheKey {
+				return lookupRequestToKey(&v1.DispatchLookupRequest{
+					ObjectRelation: RR("document", "view"),
+					Subject:        ONR("user", "mariah", "..."),
+					Limit:          10,
+					Metadata: &v1.ResolverMeta{
+						AtRevision: "1234",
+					},
+					Context: func() *structpb.Struct {
+						v, _ := structpb.NewStruct(map[string]any{
+							"foo": 1,
+							"bar": map[string]any{
+								"meh": "hiya",
+								"baz": "yo",
+							},
+						})
+						return v
+					}(),
+				}, computeBothHashes)
+			},
+			"e0d8d0e099d68b96fa01",
 		},
 		{
 			"reachable resources",
@@ -180,18 +316,19 @@ var generatorFuncs = map[string]generatorFunc{
 		subjectRelation *core.RelationReference,
 		metadata *v1.ResolverMeta,
 	) (DispatchCacheKey, []string) {
-		return checkRequestToKeyWithCanonical(&v1.DispatchCheckRequest{
-				ResourceRelation: resourceRelation,
-				ResourceIds:      resourceIds,
-				Subject:          ONR(subjectRelation.Namespace, subjectIds[0], subjectRelation.Relation),
-				Metadata:         metadata,
-			}, resourceRelation.Relation), append([]string{
-				resourceRelation.Namespace,
-				resourceRelation.Relation,
-				subjectRelation.Namespace,
-				subjectIds[0],
-				subjectRelation.Relation,
-			}, resourceIds...)
+		key, _ := checkRequestToKeyWithCanonical(&v1.DispatchCheckRequest{
+			ResourceRelation: resourceRelation,
+			ResourceIds:      resourceIds,
+			Subject:          ONR(subjectRelation.Namespace, subjectIds[0], subjectRelation.Relation),
+			Metadata:         metadata,
+		}, resourceRelation.Relation)
+		return key, append([]string{
+			resourceRelation.Namespace,
+			resourceRelation.Relation,
+			subjectRelation.Namespace,
+			subjectIds[0],
+			subjectRelation.Relation,
+		}, resourceIds...)
 	},
 
 	// Lookup Resources.
@@ -360,4 +497,31 @@ func TestComputeOnlyStableHash(t *testing.T) {
 	}, computeOnlyStableHash)
 
 	require.Equal(t, uint64(0), result.processSpecificSum)
+}
+
+func TestComputeContextHash(t *testing.T) {
+	result := lookupRequestToKey(&v1.DispatchLookupRequest{
+		ObjectRelation: RR("document", "view"),
+		Subject:        ONR("user", "mariah", "..."),
+		Limit:          10,
+		Metadata: &v1.ResolverMeta{
+			AtRevision: "1234",
+		},
+		Context: func() *structpb.Struct {
+			v, _ := structpb.NewStruct(map[string]any{
+				"null": nil,
+				"list": []any{
+					1, true, "3",
+				},
+				"nested": map[string]any{
+					"a": "hi",
+					"b": "hello",
+					"c": 123,
+				},
+			})
+			return v
+		}(),
+	}, computeBothHashes)
+
+	require.Equal(t, "82b4a3a3c5e3ecf1df01", hex.EncodeToString(result.StableSumAsBytes()))
 }

@@ -6,10 +6,12 @@ import (
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
-	"github.com/rs/zerolog/log"
+	"github.com/shopspring/decimal"
 
 	"github.com/authzed/spicedb/internal/datastore/common"
+	log "github.com/authzed/spicedb/internal/logging"
 	"github.com/authzed/spicedb/pkg/datastore"
+	"github.com/authzed/spicedb/pkg/datastore/revision"
 )
 
 var _ common.GarbageCollector = (*Datastore)(nil)
@@ -23,7 +25,7 @@ func (mds *Datastore) Now(ctx context.Context) (time.Time, error) {
 	}
 
 	var now time.Time
-	err = mds.db.QueryRowContext(datastore.SeparateContextWithTracing(ctx), nowSQL, nowArgs...).Scan(&now)
+	err = mds.db.QueryRowContext(ctx, nowSQL, nowArgs...).Scan(&now)
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -35,31 +37,32 @@ func (mds *Datastore) Now(ctx context.Context) (time.Time, error) {
 
 // TODO (@vroldanbet) dupe from postgres datastore - need to refactor
 // - main difference is how the PSQL driver handles null values
-func (mds *Datastore) TxIDBefore(ctx context.Context, before time.Time) (uint64, error) {
+func (mds *Datastore) TxIDBefore(ctx context.Context, before time.Time) (datastore.Revision, error) {
 	// Find the highest transaction ID before the GC window.
 	query, args, err := mds.GetLastRevision.Where(sq.Lt{colTimestamp: before}).ToSql()
 	if err != nil {
-		return 0, err
+		return datastore.NoRevision, err
 	}
 
 	var value sql.NullInt64
-	err = mds.db.QueryRowContext(
-		datastore.SeparateContextWithTracing(ctx), query, args...,
-	).Scan(&value)
+	err = mds.db.QueryRowContext(ctx, query, args...).Scan(&value)
 	if err != nil {
-		return 0, err
+		return datastore.NoRevision, err
 	}
 
 	if !value.Valid {
-		log.Debug().Time("before", before).Msg("no stale transactions found in the datastore")
-		return 0, nil
+		log.Ctx(ctx).Debug().Time("before", before).Msg("no stale transactions found in the datastore")
+		return datastore.NoRevision, nil
 	}
-	return uint64(value.Int64), nil
+	return revision.NewFromDecimal(decimal.NewFromInt(value.Int64)), nil
 }
 
 // TODO (@vroldanbet) dupe from postgres datastore - need to refactor
 // - implementation misses metrics
-func (mds *Datastore) DeleteBeforeTx(ctx context.Context, txID uint64) (removed common.DeletionCounts, err error) {
+func (mds *Datastore) DeleteBeforeTx(
+	ctx context.Context,
+	txID datastore.Revision,
+) (removed common.DeletionCounts, err error) {
 	// Delete any relationship rows with deleted_transaction <= the transaction ID.
 	removed.Relationships, err = mds.batchDelete(ctx, mds.driver.RelationTuple(), sq.LtOrEq{colDeletedTxn: txID})
 	if err != nil {

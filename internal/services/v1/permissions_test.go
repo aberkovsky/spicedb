@@ -5,23 +5,25 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
+	"math/rand"
 	"sort"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/authzed/spicedb/pkg/datastore"
 
 	"github.com/authzed/authzed-go/pkg/requestmeta"
 	"github.com/authzed/authzed-go/pkg/responsemeta"
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 	"github.com/authzed/grpcutil"
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/authzed/spicedb/internal/datastore/memdb"
 	v1svc "github.com/authzed/spicedb/internal/services/v1"
@@ -36,13 +38,6 @@ import (
 )
 
 var testTimedeltas = []time.Duration{0, 1 * time.Second}
-
-func init() {
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout})
-
-	// Set this to Trace to dump log statements in tests.
-	zerolog.SetGlobalLevel(zerolog.DebugLevel)
-}
 
 func obj(objType, objID string) *v1.ObjectReference {
 	return &v1.ObjectReference{
@@ -258,7 +253,7 @@ func TestCheckPermissions(t *testing.T) {
 							checkResp, err := client.CheckPermission(ctx, &v1.CheckPermissionRequest{
 								Consistency: &v1.Consistency{
 									Requirement: &v1.Consistency_AtLeastAsFresh{
-										AtLeastAsFresh: zedtoken.NewFromRevision(revision),
+										AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
 									},
 								},
 								Resource:   tc.resource,
@@ -314,7 +309,7 @@ func TestCheckPermissionWithDebugInfo(t *testing.T) {
 	checkResp, err := client.CheckPermission(ctx, &v1.CheckPermissionRequest{
 		Consistency: &v1.Consistency{
 			Requirement: &v1.Consistency_AtLeastAsFresh{
-				AtLeastAsFresh: zedtoken.NewFromRevision(revision),
+				AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
 			},
 		},
 		Resource:   obj("document", "masterplan"),
@@ -337,16 +332,14 @@ func TestCheckPermissionWithDebugInfo(t *testing.T) {
 	require.GreaterOrEqual(len(debugInfo.Check.GetSubProblems().Traces), 1)
 	require.NotEmpty(debugInfo.SchemaUsed)
 
-	inputSchema := compiler.InputSchema{
-		Source:       input.Source("schema"),
-		SchemaString: debugInfo.SchemaUsed,
-	}
-
 	// Compile the schema into the namespace definitions.
 	emptyDefaultPrefix := ""
-	nsdefs, err := compiler.Compile([]compiler.InputSchema{inputSchema}, &emptyDefaultPrefix)
+	compiled, err := compiler.Compile(compiler.InputSchema{
+		Source:       input.Source("schema"),
+		SchemaString: debugInfo.SchemaUsed,
+	}, &emptyDefaultPrefix)
 	require.NoError(err, "Invalid schema: %s", debugInfo.SchemaUsed)
-	require.Equal(3, len(nsdefs))
+	require.Equal(4, len(compiled.OrderedDefinitions))
 }
 
 func TestLookupResources(t *testing.T) {
@@ -481,7 +474,7 @@ func TestLookupResources(t *testing.T) {
 						Subject:            tc.subject,
 						Consistency: &v1.Consistency{
 							Requirement: &v1.Consistency_AtLeastAsFresh{
-								AtLeastAsFresh: zedtoken.NewFromRevision(revision),
+								AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
 							},
 						},
 					}, grpc.Trailer(&trailer))
@@ -551,7 +544,7 @@ func TestExpand(t *testing.T) {
 						Permission: tc.startPermission,
 						Consistency: &v1.Consistency{
 							Requirement: &v1.Consistency_AtLeastAsFresh{
-								AtLeastAsFresh: zedtoken.NewFromRevision(revision),
+								AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
 							},
 						},
 					}, grpc.Trailer(&trailer))
@@ -588,36 +581,42 @@ func countLeafs(node *v1.PermissionRelationshipTree) int {
 	}
 }
 
-func TestTranslateExpansionTree(t *testing.T) {
-	ONR := tuple.ObjectAndRelation
+var ONR = tuple.ObjectAndRelation
 
+func DS(objectType string, objectID string, objectRelation string) *core.DirectSubject {
+	return &core.DirectSubject{
+		Subject: ONR(objectType, objectID, objectRelation),
+	}
+}
+
+func TestTranslateExpansionTree(t *testing.T) {
 	table := []struct {
 		name  string
 		input *core.RelationTupleTreeNode
 	}{
-		{"simple leaf", pgraph.Leaf(nil, (ONR("user", "user1", "...")))},
+		{"simple leaf", pgraph.Leaf(nil, (DS("user", "user1", "...")))},
 		{
 			"simple union",
 			pgraph.Union(nil,
-				pgraph.Leaf(nil, (ONR("user", "user1", "..."))),
-				pgraph.Leaf(nil, (ONR("user", "user2", "..."))),
-				pgraph.Leaf(nil, (ONR("user", "user3", "..."))),
+				pgraph.Leaf(nil, (DS("user", "user1", "..."))),
+				pgraph.Leaf(nil, (DS("user", "user2", "..."))),
+				pgraph.Leaf(nil, (DS("user", "user3", "..."))),
 			),
 		},
 		{
 			"simple intersection",
 			pgraph.Intersection(nil,
 				pgraph.Leaf(nil,
-					(ONR("user", "user1", "...")),
-					(ONR("user", "user2", "...")),
+					(DS("user", "user1", "...")),
+					(DS("user", "user2", "...")),
 				),
 				pgraph.Leaf(nil,
-					(ONR("user", "user2", "...")),
-					(ONR("user", "user3", "...")),
+					(DS("user", "user2", "...")),
+					(DS("user", "user3", "...")),
 				),
 				pgraph.Leaf(nil,
-					(ONR("user", "user2", "...")),
-					(ONR("user", "user4", "...")),
+					(DS("user", "user2", "...")),
+					(DS("user", "user4", "...")),
 				),
 			),
 		},
@@ -625,12 +624,12 @@ func TestTranslateExpansionTree(t *testing.T) {
 			"empty intersection",
 			pgraph.Intersection(nil,
 				pgraph.Leaf(nil,
-					(ONR("user", "user1", "...")),
-					(ONR("user", "user2", "...")),
+					(DS("user", "user1", "...")),
+					(DS("user", "user2", "...")),
 				),
 				pgraph.Leaf(nil,
-					(ONR("user", "user3", "...")),
-					(ONR("user", "user4", "...")),
+					(DS("user", "user3", "...")),
+					(DS("user", "user4", "...")),
 				),
 			),
 		},
@@ -638,22 +637,22 @@ func TestTranslateExpansionTree(t *testing.T) {
 			"simple exclusion",
 			pgraph.Exclusion(nil,
 				pgraph.Leaf(nil,
-					(ONR("user", "user1", "...")),
-					(ONR("user", "user2", "...")),
+					(DS("user", "user1", "...")),
+					(DS("user", "user2", "...")),
 				),
-				pgraph.Leaf(nil, (ONR("user", "user2", "..."))),
-				pgraph.Leaf(nil, (ONR("user", "user3", "..."))),
+				pgraph.Leaf(nil, (DS("user", "user2", "..."))),
+				pgraph.Leaf(nil, (DS("user", "user3", "..."))),
 			),
 		},
 		{
 			"empty exclusion",
 			pgraph.Exclusion(nil,
 				pgraph.Leaf(nil,
-					(ONR("user", "user1", "...")),
-					(ONR("user", "user2", "...")),
+					(DS("user", "user1", "...")),
+					(DS("user", "user2", "...")),
 				),
-				pgraph.Leaf(nil, (ONR("user", "user1", "..."))),
-				pgraph.Leaf(nil, (ONR("user", "user2", "..."))),
+				pgraph.Leaf(nil, (DS("user", "user1", "..."))),
+				pgraph.Leaf(nil, (DS("user", "user2", "..."))),
 			),
 		},
 	}
@@ -778,7 +777,7 @@ func TestLookupSubjects(t *testing.T) {
 						OptionalSubjectRelation: tc.subjectRelation,
 						Consistency: &v1.Consistency{
 							Requirement: &v1.Consistency_AtLeastAsFresh{
-								AtLeastAsFresh: zedtoken.NewFromRevision(revision),
+								AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
 							},
 						},
 					}, grpc.Trailer(&trailer))
@@ -794,7 +793,7 @@ func TestLookupSubjects(t *testing.T) {
 
 							require.NoError(err)
 
-							resolvedObjectIds = append(resolvedObjectIds, resp.SubjectObjectId)
+							resolvedObjectIds = append(resolvedObjectIds, resp.Subject.SubjectObjectId)
 						}
 
 						sort.Strings(tc.expectedSubjectIds)
@@ -813,4 +812,561 @@ func TestLookupSubjects(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCheckWithCaveats(t *testing.T) {
+	req := require.New(t)
+	conn, cleanup, _, revision := testserver.NewTestServer(req, testTimedeltas[0], memdb.DisableGC, true, tf.StandardDatastoreWithCaveatedData)
+	client := v1.NewPermissionsServiceClient(conn)
+	t.Cleanup(cleanup)
+
+	ctx := context.Background()
+
+	request := &v1.CheckPermissionRequest{
+		Consistency: &v1.Consistency{
+			Requirement: &v1.Consistency_AtLeastAsFresh{
+				AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+			},
+		},
+		Resource:   obj("document", "companyplan"),
+		Permission: "view",
+		Subject:    sub("user", "owner", ""),
+	}
+
+	// caveat evaluated and returned false
+	var err error
+	request.Context, err = structpb.NewStruct(map[string]any{"secret": "incorrect_value"})
+	req.NoError(err)
+
+	checkResp, err := client.CheckPermission(ctx, request)
+	req.NoError(err)
+	req.Equal(v1.CheckPermissionResponse_PERMISSIONSHIP_NO_PERMISSION, checkResp.Permissionship)
+
+	// caveat evaluated and returned true
+	request.Context, err = structpb.NewStruct(map[string]any{"secret": "1234"})
+	req.NoError(err)
+
+	checkResp, err = client.CheckPermission(ctx, request)
+	req.NoError(err)
+	req.Equal(v1.CheckPermissionResponse_PERMISSIONSHIP_HAS_PERMISSION, checkResp.Permissionship)
+
+	// caveat evaluated but context variable was missing
+	request.Context = nil
+	checkResp, err = client.CheckPermission(ctx, request)
+	req.NoError(err)
+	req.Equal(v1.CheckPermissionResponse_PERMISSIONSHIP_CONDITIONAL_PERMISSION, checkResp.Permissionship)
+	req.EqualValues([]string{"secret"}, checkResp.PartialCaveatInfo.MissingRequiredContext)
+
+	// context exceeds length limit
+	request.Context, err = structpb.NewStruct(generateMap(64))
+	req.NoError(err)
+
+	_, err = client.CheckPermission(ctx, request)
+	grpcutil.RequireStatus(t, codes.InvalidArgument, err)
+}
+
+func TestCheckWithCaveatErrors(t *testing.T) {
+	req := require.New(t)
+	conn, cleanup, _, revision := testserver.NewTestServer(
+		req,
+		testTimedeltas[0],
+		memdb.DisableGC,
+		true,
+		func(ds datastore.Datastore, assertions *require.Assertions) (datastore.Datastore, datastore.Revision) {
+			return tf.DatastoreFromSchemaAndTestRelationships(
+				ds,
+				`definition user {}
+
+				 caveat somecaveat(somemap map<any>) {
+					  somemap.first == 42 && somemap.second < 56
+				 }
+				
+				 definition document {
+					relation viewer: user with somecaveat
+					permission view = viewer
+				 }
+				`,
+				[]*core.RelationTuple{tuple.MustParse("document:firstdoc#viewer@user:tom[somecaveat]")},
+				assertions,
+			)
+		})
+
+	client := v1.NewPermissionsServiceClient(conn)
+	t.Cleanup(cleanup)
+
+	ctx := context.Background()
+
+	tcs := []struct {
+		name          string
+		context       map[string]any
+		expectedError string
+		expectedCode  codes.Code
+	}{
+		{
+			"nil map in context",
+			map[string]any{
+				"somemap": nil,
+			},
+			"type error for parameters for caveat `somecaveat`: could not convert context parameter `somemap`: for map<any>: map requires a map, found: <nil>",
+			codes.InvalidArgument,
+		},
+		{
+			"empty map in context",
+			map[string]any{
+				"somemap": map[string]any{},
+			},
+			"evaluation error for caveat somecaveat: no such key: first",
+			codes.InvalidArgument,
+		},
+		{
+			"wrong value in map",
+			map[string]any{
+				"somemap": map[string]any{
+					"first":  42,
+					"second": "hello",
+				},
+			},
+			"evaluation error for caveat somecaveat: no such overload",
+			codes.InvalidArgument,
+		},
+	}
+
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			request := &v1.CheckPermissionRequest{
+				Consistency: &v1.Consistency{
+					Requirement: &v1.Consistency_AtLeastAsFresh{
+						AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+					},
+				},
+				Resource:   obj("document", "firstdoc"),
+				Permission: "view",
+				Subject:    sub("user", "tom", ""),
+			}
+
+			var err error
+			request.Context, err = structpb.NewStruct(tc.context)
+			req.NoError(err)
+
+			_, err = client.CheckPermission(ctx, request)
+			req.Error(err)
+			req.Contains(err.Error(), tc.expectedError)
+			grpcutil.RequireStatus(t, tc.expectedCode, err)
+		})
+	}
+}
+
+func TestLookupResourcesWithCaveats(t *testing.T) {
+	req := require.New(t)
+	conn, cleanup, _, revision := testserver.NewTestServer(req, testTimedeltas[0], memdb.DisableGC, true,
+		func(ds datastore.Datastore, require *require.Assertions) (datastore.Datastore, datastore.Revision) {
+			return tf.DatastoreFromSchemaAndTestRelationships(ds, `
+				definition user {}
+
+				caveat testcaveat(somecondition int) {
+					somecondition == 42
+				}
+
+				definition document {
+					relation viewer: user | user with testcaveat
+					permission view = viewer
+				}
+			`, []*core.RelationTuple{
+				tuple.MustParse("document:first#viewer@user:tom"),
+				tuple.MustWithCaveat(tuple.MustParse("document:second#viewer@user:tom"), "testcaveat"),
+			}, require)
+		})
+
+	client := v1.NewPermissionsServiceClient(conn)
+	t.Cleanup(cleanup)
+
+	ctx := context.Background()
+
+	// Run with empty context.
+	caveatContext, err := structpb.NewStruct(map[string]any{})
+	require.NoError(t, err)
+
+	request := &v1.LookupResourcesRequest{
+		Consistency: &v1.Consistency{
+			Requirement: &v1.Consistency_AtLeastAsFresh{
+				AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+			},
+		},
+		ResourceObjectType: "document",
+		Permission:         "view",
+		Subject:            sub("user", "tom", ""),
+		Context:            caveatContext,
+	}
+
+	cli, err := client.LookupResources(ctx, request)
+	req.NoError(err)
+
+	var responses []*v1.LookupResourcesResponse
+	for {
+		res, err := cli.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+
+		require.NoError(t, err)
+		responses = append(responses, res)
+	}
+
+	sort.Sort(byIDAndPermission(responses))
+
+	require.Equal(t, 2, len(responses))
+
+	require.Equal(t, "first", responses[0].ResourceObjectId)
+	require.Equal(t, v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION, responses[0].Permissionship)
+
+	require.Equal(t, "second", responses[1].ResourceObjectId)
+	require.Equal(t, v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION, responses[1].Permissionship)
+	require.Equal(t, []string{"somecondition"}, responses[1].PartialCaveatInfo.MissingRequiredContext)
+
+	// Run with full context.
+	caveatContext, err = structpb.NewStruct(map[string]any{
+		"somecondition": 42,
+	})
+	require.NoError(t, err)
+
+	request = &v1.LookupResourcesRequest{
+		Consistency: &v1.Consistency{
+			Requirement: &v1.Consistency_AtLeastAsFresh{
+				AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+			},
+		},
+		ResourceObjectType: "document",
+		Permission:         "view",
+		Subject:            sub("user", "tom", ""),
+		Context:            caveatContext,
+	}
+
+	cli, err = client.LookupResources(ctx, request)
+	req.NoError(err)
+
+	responses = make([]*v1.LookupResourcesResponse, 0)
+	for {
+		res, err := cli.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+
+		require.NoError(t, err)
+		responses = append(responses, res)
+	}
+
+	sort.Sort(byIDAndPermission(responses))
+
+	require.Equal(t, 2, len(responses))
+
+	require.Equal(t, "first", responses[0].ResourceObjectId)
+	require.Equal(t, v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION, responses[0].Permissionship)
+
+	require.Equal(t, "second", responses[1].ResourceObjectId)
+	require.Equal(t, v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_HAS_PERMISSION, responses[1].Permissionship)
+}
+
+type byIDAndPermission []*v1.LookupResourcesResponse
+
+func (a byIDAndPermission) Len() int { return len(a) }
+func (a byIDAndPermission) Less(i, j int) bool {
+	return strings.Compare(
+		fmt.Sprintf("%s:%v", a[i].ResourceObjectId, a[i].Permissionship),
+		fmt.Sprintf("%s:%v", a[j].ResourceObjectId, a[j].Permissionship),
+	) < 0
+}
+func (a byIDAndPermission) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
+
+func TestLookupSubjectsWithCaveats(t *testing.T) {
+	req := require.New(t)
+	conn, cleanup, _, revision := testserver.NewTestServer(req, testTimedeltas[0], memdb.DisableGC, true,
+		func(ds datastore.Datastore, require *require.Assertions) (datastore.Datastore, datastore.Revision) {
+			return tf.DatastoreFromSchemaAndTestRelationships(ds, `
+				definition user {}
+
+				caveat testcaveat(somecondition int) {
+					somecondition == 42
+				}
+
+				definition document {
+					relation viewer: user | user with testcaveat
+					permission view = viewer
+				}
+			`, []*core.RelationTuple{
+				tuple.MustParse("document:first#viewer@user:tom"),
+				tuple.MustWithCaveat(tuple.MustParse("document:first#viewer@user:sarah"), "testcaveat"),
+			}, require)
+		})
+
+	client := v1.NewPermissionsServiceClient(conn)
+	t.Cleanup(cleanup)
+
+	ctx := context.Background()
+
+	// Call with empty context.
+	caveatContext, err := structpb.NewStruct(map[string]any{})
+	req.NoError(err)
+
+	request := &v1.LookupSubjectsRequest{
+		Consistency: &v1.Consistency{
+			Requirement: &v1.Consistency_AtLeastAsFresh{
+				AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+			},
+		},
+		Resource:          obj("document", "first"),
+		Permission:        "view",
+		SubjectObjectType: "user",
+		Context:           caveatContext,
+	}
+
+	lookupClient, err := client.LookupSubjects(ctx, request)
+	req.NoError(err)
+
+	var resolvedSubjects []expectedSubject
+	for {
+		resp, err := lookupClient.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+
+		require.NoError(t, err)
+		resolvedSubjects = append(resolvedSubjects, expectedSubject{
+			resp.Subject.SubjectObjectId,
+			resp.Subject.Permissionship == v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION,
+		})
+	}
+
+	expectedSubjects := []expectedSubject{
+		{"sarah", true},
+		{"tom", false},
+	}
+
+	sort.Sort(sortByID(resolvedSubjects))
+	sort.Sort(sortByID(expectedSubjects))
+
+	req.Equal(expectedSubjects, resolvedSubjects)
+
+	// Call with proper context.
+	caveatContext, err = structpb.NewStruct(map[string]any{
+		"somecondition": 42,
+	})
+	req.NoError(err)
+
+	request = &v1.LookupSubjectsRequest{
+		Consistency: &v1.Consistency{
+			Requirement: &v1.Consistency_AtLeastAsFresh{
+				AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+			},
+		},
+		Resource:          obj("document", "first"),
+		Permission:        "view",
+		SubjectObjectType: "user",
+		Context:           caveatContext,
+	}
+
+	lookupClient, err = client.LookupSubjects(ctx, request)
+	req.NoError(err)
+
+	resolvedSubjects = []expectedSubject{}
+	for {
+		resp, err := lookupClient.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+
+		require.NoError(t, err)
+		resolvedSubjects = append(resolvedSubjects, expectedSubject{
+			resp.Subject.SubjectObjectId,
+			resp.Subject.Permissionship == v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION,
+		})
+	}
+
+	expectedSubjects = []expectedSubject{
+		{"sarah", false},
+		{"tom", false},
+	}
+
+	sort.Sort(sortByID(resolvedSubjects))
+	sort.Sort(sortByID(expectedSubjects))
+
+	req.Equal(expectedSubjects, resolvedSubjects)
+
+	// Call with negative context.
+	caveatContext, err = structpb.NewStruct(map[string]any{
+		"somecondition": 32,
+	})
+	req.NoError(err)
+
+	request = &v1.LookupSubjectsRequest{
+		Consistency: &v1.Consistency{
+			Requirement: &v1.Consistency_AtLeastAsFresh{
+				AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+			},
+		},
+		Resource:          obj("document", "first"),
+		Permission:        "view",
+		SubjectObjectType: "user",
+		Context:           caveatContext,
+	}
+
+	lookupClient, err = client.LookupSubjects(ctx, request)
+	req.NoError(err)
+
+	resolvedSubjects = []expectedSubject{}
+	for {
+		resp, err := lookupClient.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+
+		require.NoError(t, err)
+		resolvedSubjects = append(resolvedSubjects, expectedSubject{
+			resp.Subject.SubjectObjectId,
+			resp.Subject.Permissionship == v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION,
+		})
+	}
+
+	expectedSubjects = []expectedSubject{
+		{"tom", false},
+	}
+
+	sort.Sort(sortByID(resolvedSubjects))
+	sort.Sort(sortByID(expectedSubjects))
+
+	req.Equal(expectedSubjects, resolvedSubjects)
+}
+
+func TestLookupSubjectsWithCaveatedWildcards(t *testing.T) {
+	req := require.New(t)
+	conn, cleanup, _, revision := testserver.NewTestServer(req, testTimedeltas[0], memdb.DisableGC, true,
+		func(ds datastore.Datastore, require *require.Assertions) (datastore.Datastore, datastore.Revision) {
+			return tf.DatastoreFromSchemaAndTestRelationships(ds, `
+				definition user {}
+
+				caveat testcaveat(somecondition int) {
+					somecondition == 42
+				}
+
+				caveat anothercaveat(anothercondition int) {
+					anothercondition == 42
+				}
+
+				definition document {
+					relation viewer: user:* with testcaveat
+					relation banned: user with testcaveat
+					permission view = viewer - banned
+				}
+			`, []*core.RelationTuple{
+				tuple.MustWithCaveat(tuple.MustParse("document:first#viewer@user:*"), "testcaveat"),
+				tuple.MustWithCaveat(tuple.MustParse("document:first#banned@user:bannedguy"), "anothercaveat"),
+			}, require)
+		})
+
+	client := v1.NewPermissionsServiceClient(conn)
+	t.Cleanup(cleanup)
+
+	ctx := context.Background()
+
+	// Call with empty context.
+	caveatContext, err := structpb.NewStruct(map[string]any{})
+	req.NoError(err)
+
+	request := &v1.LookupSubjectsRequest{
+		Consistency: &v1.Consistency{
+			Requirement: &v1.Consistency_AtLeastAsFresh{
+				AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+			},
+		},
+		Resource:          obj("document", "first"),
+		Permission:        "view",
+		SubjectObjectType: "user",
+		Context:           caveatContext,
+	}
+
+	lookupClient, err := client.LookupSubjects(ctx, request)
+	req.NoError(err)
+
+	found := false
+	for {
+		resp, err := lookupClient.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+
+		found = true
+		require.NoError(t, err)
+		require.Equal(t, "*", resp.Subject.SubjectObjectId)
+		require.Equal(t, v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION, resp.Subject.Permissionship)
+		require.Equal(t, 1, len(resp.ExcludedSubjects))
+
+		require.Equal(t, "bannedguy", resp.ExcludedSubjects[0].SubjectObjectId)
+		require.Equal(t, v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION, resp.ExcludedSubjects[0].Permissionship)
+	}
+	require.True(t, found)
+
+	// Call with negative context.
+	caveatContext, err = structpb.NewStruct(map[string]any{
+		"anothercondition": 41,
+	})
+	req.NoError(err)
+
+	request = &v1.LookupSubjectsRequest{
+		Consistency: &v1.Consistency{
+			Requirement: &v1.Consistency_AtLeastAsFresh{
+				AtLeastAsFresh: zedtoken.MustNewFromRevision(revision),
+			},
+		},
+		Resource:          obj("document", "first"),
+		Permission:        "view",
+		SubjectObjectType: "user",
+		Context:           caveatContext,
+	}
+
+	lookupClient, err = client.LookupSubjects(ctx, request)
+	req.NoError(err)
+
+	found = false
+	for {
+		resp, err := lookupClient.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+
+		found = true
+		require.NoError(t, err)
+		require.Equal(t, "*", resp.Subject.SubjectObjectId)
+		require.Equal(t, v1.LookupPermissionship_LOOKUP_PERMISSIONSHIP_CONDITIONAL_PERMISSION, resp.Subject.Permissionship)
+		require.Equal(t, 0, len(resp.ExcludedSubjects))
+	}
+	require.True(t, found)
+}
+
+type expectedSubject struct {
+	subjectID     string
+	isConditional bool
+}
+
+type sortByID []expectedSubject
+
+func (a sortByID) Len() int           { return len(a) }
+func (a sortByID) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a sortByID) Less(i, j int) bool { return strings.Compare(a[i].subjectID, a[j].subjectID) < 0 }
+
+func generateMap(length int) map[string]any {
+	output := make(map[string]any, length)
+	for i := 0; i < length; i++ {
+		random := randString(32)
+		output[random] = random
+	}
+	return output
+}
+
+var randInput = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+func randString(length int) string {
+	b := make([]rune, length)
+	for i := range b {
+		b[i] = randInput[rand.Intn(len(randInput))] //nolint:gosec
+	}
+	return string(b)
 }

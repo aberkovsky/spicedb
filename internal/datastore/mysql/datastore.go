@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
@@ -13,7 +14,6 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -22,7 +22,10 @@ import (
 	"github.com/authzed/spicedb/internal/datastore/common"
 	"github.com/authzed/spicedb/internal/datastore/common/revisions"
 	"github.com/authzed/spicedb/internal/datastore/mysql/migrations"
+	"github.com/authzed/spicedb/internal/datastore/proxy"
+	log "github.com/authzed/spicedb/internal/logging"
 	"github.com/authzed/spicedb/pkg/datastore"
+	"github.com/authzed/spicedb/pkg/datastore/revision"
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 )
 
@@ -40,6 +43,10 @@ const (
 	colUsersetNamespace = "userset_namespace"
 	colUsersetObjectID  = "userset_object_id"
 	colUsersetRelation  = "userset_relation"
+	colName             = "name"
+	colCaveatDefinition = "definition"
+	colCaveatName       = "caveat_name"
+	colCaveatContext    = "caveat_context"
 
 	errUnableToInstantiate = "unable to instantiate datastore: %w"
 	liveDeletedTxnID       = uint64(math.MaxInt64)
@@ -86,7 +93,16 @@ type sqlFilter interface {
 //
 // URI: [scheme://][user[:[password]]@]host[:port][/schema][?attribute1=value1&attribute2=value2...
 // See https://dev.mysql.com/doc/refman/8.0/en/connecting-using-uri-or-key-value-pairs.html
-func NewMySQLDatastore(uri string, options ...Option) (*Datastore, error) {
+func NewMySQLDatastore(uri string, options ...Option) (datastore.Datastore, error) {
+	ds, err := newMySQLDatastore(uri, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	return proxy.NewSeparatingContextDatastoreProxy(ds), nil
+}
+
+func newMySQLDatastore(uri string, options ...Option) (*Datastore, error) {
 	config, err := generateConfig(options)
 	if err != nil {
 		return nil, fmt.Errorf(errUnableToInstantiate, err)
@@ -99,7 +115,7 @@ func NewMySQLDatastore(uri string, options ...Option) (*Datastore, error) {
 	if config.lockWaitTimeoutSeconds != nil {
 		log.Info().Uint8("timeout", *config.lockWaitTimeoutSeconds).Msg("overriding innodb_lock_wait_timeout")
 		connector, err = addSessionVariables(connector, map[string]string{
-			"innodb_lock_wait_timeout": fmt.Sprintf("%d", *config.lockWaitTimeoutSeconds),
+			"innodb_lock_wait_timeout": strconv.FormatUint(uint64(*config.lockWaitTimeoutSeconds), 10),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("NewMySQLDatastore: failed to add session variables to connector: %w", err)
@@ -216,14 +232,16 @@ func NewMySQLDatastore(uri string, options ...Option) (*Datastore, error) {
 			)
 		})
 	} else {
-		log.Warn().Msg("datastore garbage collection disabled")
+		log.Warn().Msg("datastore background garbage collection disabled")
 	}
 
 	return store, nil
 }
 
 // TODO (@vroldanbet) dupe from postgres datastore - need to refactor
-func (mds *Datastore) SnapshotReader(rev datastore.Revision) datastore.Reader {
+func (mds *Datastore) SnapshotReader(revisionRaw datastore.Revision) datastore.Reader {
+	rev := revisionRaw.(revision.Decimal)
+
 	createTxFunc := func(ctx context.Context) (*sql.Tx, txCleanupFunc, error) {
 		tx, err := mds.db.BeginTx(ctx, mds.readTxOptions)
 		if err != nil {
@@ -280,12 +298,11 @@ func (mds *Datastore) ReadWriteTx(
 					querySplitter,
 					currentlyLivingObjects,
 				},
-				ctx,
 				tx,
 				newTxnID,
 			}
 
-			if err := fn(ctx, rwt); err != nil {
+			if err := fn(rwt); err != nil {
 				return err
 			}
 
@@ -334,15 +351,13 @@ func newMySQLExecutor(tx querier) common.ExecuteQueryFunc {
 	// Prepared statements are also not used given they perform poorly on environments where connections have
 	// short lifetime (e.g. to gracefully handle load-balancer connection drain)
 	return func(ctx context.Context, sqlQuery string, args []interface{}) ([]*core.RelationTuple, error) {
-		ctx = datastore.SeparateContextWithTracing(ctx)
-
 		span := trace.SpanFromContext(ctx)
 
 		rows, err := tx.QueryContext(ctx, sqlQuery, args...)
 		if err != nil {
 			return nil, fmt.Errorf(errUnableToQueryTuples, err)
 		}
-		defer migrations.LogOnError(ctx, rows.Close)
+		defer common.LogOnError(ctx, rows.Close)
 
 		span.AddEvent("Query issued to database")
 
@@ -353,6 +368,8 @@ func newMySQLExecutor(tx querier) common.ExecuteQueryFunc {
 				Subject:             &core.ObjectAndRelation{},
 			}
 
+			var caveatName string
+			var caveatContext caveatContextWrapper
 			err := rows.Scan(
 				&nextTuple.ResourceAndRelation.Namespace,
 				&nextTuple.ResourceAndRelation.ObjectId,
@@ -360,7 +377,14 @@ func newMySQLExecutor(tx querier) common.ExecuteQueryFunc {
 				&nextTuple.Subject.Namespace,
 				&nextTuple.Subject.ObjectId,
 				&nextTuple.Subject.Relation,
+				&caveatName,
+				&caveatContext,
 			)
+			if err != nil {
+				return nil, fmt.Errorf(errUnableToQueryTuples, err)
+			}
+
+			nextTuple.Caveat, err = common.ContextualizedCaveatFrom(caveatName, caveatContext)
 			if err != nil {
 				return nil, fmt.Errorf(errUnableToQueryTuples, err)
 			}
@@ -403,6 +427,7 @@ type Datastore struct {
 
 	*QueryBuilder
 	*revisions.CachedOptimizedRevisions
+	revision.DecimalDecoder
 }
 
 // Close closes the data store.
@@ -492,7 +517,7 @@ func (mds *Datastore) seedDatabase(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer migrations.LogOnError(ctx, tx.Rollback)
+	defer common.LogOnError(ctx, tx.Rollback)
 
 	// idempotent INSERT IGNORE transaction id=1. safe to be executed concurrently.
 	result, err := tx.ExecContext(ctx, mds.createBaseTxn)
@@ -508,7 +533,7 @@ func (mds *Datastore) seedDatabase(ctx context.Context) error {
 	if lastInsertID != noLastInsertID {
 		// If there was no error and `lastInsertID` is 0, the insert was ignored. This indicates the transaction
 		// was already seeded by another processes (i.e. race condition).
-		log.Info().Int64("headRevision", lastInsertID).Msg("seeded base datastore headRevision")
+		log.Ctx(ctx).Info().Int64("headRevision", lastInsertID).Msg("seeded base datastore headRevision")
 	}
 
 	uuidSQL, uuidArgs, err := sb.
@@ -534,7 +559,7 @@ func (mds *Datastore) seedDatabase(ctx context.Context) error {
 	if lastInsertID != noLastInsertID {
 		// If there was no error and `lastInsertID` is 0, the insert was ignored. This indicates the transaction
 		// was already seeded by another processes (i.e. race condition).
-		log.Info().Int64("headRevision", lastInsertID).Msg("seeded base datastore unique ID")
+		log.Ctx(ctx).Info().Int64("headRevision", lastInsertID).Msg("seeded base datastore unique ID")
 	}
 
 	err = tx.Commit()
@@ -546,7 +571,7 @@ func (mds *Datastore) seedDatabase(ctx context.Context) error {
 }
 
 // TODO (@vroldanbet) dupe from postgres datastore - need to refactor
-func buildLivingObjectFilterForRevision(revision datastore.Revision) queryFilterer {
+func buildLivingObjectFilterForRevision(revision revision.Decimal) queryFilterer {
 	return func(original sq.SelectBuilder) sq.SelectBuilder {
 		return original.Where(sq.LtOrEq{colCreatedTxn: transactionFromRevision(revision)}).
 			Where(sq.Or{

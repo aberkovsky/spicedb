@@ -1,8 +1,6 @@
 package memdb
 
 import (
-	"fmt"
-
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 	"github.com/hashicorp/go-memdb"
 	"github.com/jzelinskie/stringz"
@@ -15,7 +13,6 @@ import (
 
 const (
 	tableNamespace = "namespace"
-	indexName      = "name"
 
 	tableRelationship           = "relationship"
 	indexID                     = "id"
@@ -50,8 +47,8 @@ type relationship struct {
 }
 
 type contextualizedCaveat struct {
-	caveatID datastore.CaveatID
-	context  map[string]any
+	caveatName string
+	context    map[string]any
 }
 
 func (cr *contextualizedCaveat) ContextualizedCaveat() (*core.ContextualizedCaveat, error) {
@@ -63,21 +60,22 @@ func (cr *contextualizedCaveat) ContextualizedCaveat() (*core.ContextualizedCave
 		return nil, err
 	}
 	return &core.ContextualizedCaveat{
-		CaveatId: uint64(cr.caveatID),
-		Context:  v,
+		CaveatName: cr.caveatName,
+		Context:    v,
 	}, nil
 }
 
+func (r relationship) String() string {
+	caveat := ""
+	if r.caveat != nil {
+		caveat = "[" + r.caveat.caveatName + "]"
+	}
+
+	return r.namespace + ":" + r.resourceID + "#" + r.relation + "@" + r.subjectNamespace + ":" + r.subjectObjectID + "#" + r.subjectRelation + caveat
+}
+
 func (r relationship) MarshalZerologObject(e *zerolog.Event) {
-	e.Str("rel", fmt.Sprintf(
-		"%s:%s#%s@%s:%s#%s",
-		r.namespace,
-		r.resourceID,
-		r.relation,
-		r.subjectNamespace,
-		r.subjectObjectID,
-		r.subjectRelation,
-	))
+	e.Str("rel", r.String())
 }
 
 func (r relationship) Relationship() *v1.Relationship {
@@ -209,11 +207,6 @@ var schema = &memdb.DBSchema{
 			Indexes: map[string]*memdb.IndexSchema{
 				indexID: {
 					Name:    indexID,
-					Unique:  true,
-					Indexer: &memdb.UintFieldIndex{Field: "id"},
-				},
-				indexName: {
-					Name:    indexName,
 					Unique:  true,
 					Indexer: &memdb.StringFieldIndex{Field: "name"},
 				},
