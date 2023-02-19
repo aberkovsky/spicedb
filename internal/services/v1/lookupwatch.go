@@ -24,7 +24,6 @@ import (
 	v1lookupwatch "github.com/authzed/spicedb/pkg/proto/lookupwatch/v1"
 	grpcmw "github.com/grpc-ecosystem/go-grpc-middleware"
 	grpcvalidate "github.com/grpc-ecosystem/go-grpc-middleware/validator"
-	"github.com/shopspring/decimal"
 )
 
 // NewLookupWatchServer creates a LookupWatchServiceServer instance.
@@ -73,9 +72,9 @@ func (lw *lookupWatchServer) WatchAccessibleResources(req *v1lookupwatch.WatchAc
 		objectTypesMap[objectType] = struct{}{}
 	}
 
-	var afterRevision decimal.Decimal
+	var afterRevision datastore.Revision
 	if req.OptionalStartTimestamp != nil && req.OptionalStartTimestamp.Token != "" {
-		decodedRevision, err := zedtoken.DecodeRevision(req.OptionalStartTimestamp)
+		decodedRevision, err := zedtoken.DecodeRevision(req.OptionalStartTimestamp, ds)
 		if err != nil {
 			return status.Errorf(codes.InvalidArgument, "failed to decode start revision: %s", err)
 		}
@@ -124,7 +123,7 @@ func (lw *lookupWatchServer) processWatchResponse(
 	stream *v1lookupwatch.LookupWatchService_WatchAccessibleResourcesServer,
 ) error {
 	for _, update := range updates.Changes {
-		if err := lw.processUpdate(ctx, req, update, &updates.Revision, stream); err != nil {
+		if err := lw.processUpdate(ctx, req, update, updates.Revision, stream); err != nil {
 			return err
 		}
 	}
@@ -159,7 +158,7 @@ func (lw *lookupWatchServer) processUpdate(
 	ctx *context.Context,
 	req *v1lookupwatch.WatchAccessibleResourcesRequest,
 	update *core.RelationTupleUpdate,
-	atRevision *datastore.Revision,
+	atRevision datastore.Revision,
 	stream *v1lookupwatch.LookupWatchService_WatchAccessibleResourcesServer,
 ) error {
 
@@ -172,7 +171,7 @@ func (lw *lookupWatchServer) processUpdate(
 			update.Tuple.Subject.Namespace, update.Tuple.Subject.ObjectId,
 		)
 	}
-	reader := ds.SnapshotReader(*atRevision)
+	reader := ds.SnapshotReader(atRevision)
 
 	// STEP 1: CALL LOOKUPSUBJECTS
 	//
@@ -224,7 +223,7 @@ func (lw *lookupWatchServer) lookupSubjects(
 	ctx *context.Context,
 	req *v1lookupwatch.WatchAccessibleResourcesRequest,
 	update *core.RelationTupleUpdate,
-	atRevision *datastore.Revision,
+	atRevision datastore.Revision,
 	reader datastore.Reader,
 ) ([]string, error) {
 
@@ -289,8 +288,10 @@ func (lw *lookupWatchServer) lookupSubjects(
 	// LookupSubject call for each computed relation
 	for _, resourceRelation := range resourceRelations {
 		lsStream := dispatchpkg.NewHandlingDispatchStream(*ctx, func(result *dispatchv1.DispatchLookupSubjectsResponse) error {
-			for _, subject := range result.FoundSubjects {
-				subjects = append(subjects, subject.SubjectId)
+			for _, foundSubjects := range result.FoundSubjectsByResourceId {
+				for _, subject := range foundSubjects.FoundSubjects {
+					subjects = append(subjects, subject.SubjectId)
+				}
 			}
 			return nil
 		})
@@ -324,13 +325,15 @@ func (lw *lookupWatchServer) lookupResources(
 	ctx *context.Context,
 	req *v1lookupwatch.WatchAccessibleResourcesRequest,
 	update *core.RelationTupleUpdate,
-	atRevision *datastore.Revision,
+	atRevision datastore.Revision,
 	reader datastore.Reader,
 ) ([]string, error) {
 
 	var resources []string
 	rrStream := dispatchpkg.NewHandlingDispatchStream(*ctx, func(result *dispatchv1.DispatchReachableResourcesResponse) error {
-		resources = append(resources, result.Resource.ResourceIds...)
+		for _, resource := range result.Resources {
+			resources = append(resources, resource.ResourceId)
+		}
 		return nil
 	})
 	var subjectRelation = update.Tuple.ResourceAndRelation.Relation
@@ -383,7 +386,7 @@ func (lw *lookupWatchServer) computePermissions(
 	subjects []string,
 	ctx *context.Context,
 	req *v1lookupwatch.WatchAccessibleResourcesRequest,
-	atRevision *datastore.Revision,
+	atRevision datastore.Revision,
 	stream *v1lookupwatch.LookupWatchService_WatchAccessibleResourcesServer,
 ) error {
 	permissionUpdates := []*v1lookupwatch.PermissionUpdate{}
@@ -430,7 +433,7 @@ func (lw *lookupWatchServer) computePermissions(
 	// Send the resulting permissions to the client
 	sendErr := (*stream).Send(&v1lookupwatch.WatchAccessibleResourcesResponse{
 		Updates:        permissionUpdates,
-		ChangesThrough: zedtoken.NewFromRevision(*atRevision),
+		ChangesThrough: zedtoken.MustNewFromRevision(atRevision),
 	})
 	if sendErr != nil {
 		return sendErr
@@ -456,14 +459,14 @@ func (lw *lookupWatchServer) resolveArrowRelations(
 	return resourceRelations, nil
 }
 
-func convertPermission(permission *dispatchv1.DispatchCheckResponse_ResourceCheckResult) v1.CheckPermissionResponse_Permissionship {
+func convertPermission(permission *dispatchv1.ResourceCheckResult) v1.CheckPermissionResponse_Permissionship {
 	if permission == nil {
 		return v1.CheckPermissionResponse_PERMISSIONSHIP_NO_PERMISSION
 	}
 	switch permission.Membership {
-	case dispatchv1.DispatchCheckResponse_MEMBER:
+	case dispatchv1.ResourceCheckResult_MEMBER:
 		return v1.CheckPermissionResponse_PERMISSIONSHIP_HAS_PERMISSION
-	case dispatchv1.DispatchCheckResponse_NOT_MEMBER:
+	case dispatchv1.ResourceCheckResult_NOT_MEMBER:
 		return v1.CheckPermissionResponse_PERMISSIONSHIP_NO_PERMISSION
 	default:
 		return v1.CheckPermissionResponse_PERMISSIONSHIP_UNSPECIFIED

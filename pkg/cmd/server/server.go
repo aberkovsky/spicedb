@@ -310,6 +310,7 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 	unaryMiddleware, streamingMiddleware, err := c.buildMiddleware(defaultMiddlewareChain)
 	if err != nil {
 		return nil, fmt.Errorf("error building Middlewares: %w", err)
+	}
 
 	permSysConfig := v1svc.PermissionsServerConfig{
 		MaxPreconditionsCount: c.MaximumPreconditionCount,
