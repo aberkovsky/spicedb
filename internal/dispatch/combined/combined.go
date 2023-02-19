@@ -4,6 +4,7 @@ package combined
 
 import (
 	"os"
+	"time"
 
 	"github.com/authzed/grpcutil"
 	"google.golang.org/grpc"
@@ -23,13 +24,22 @@ import (
 type Option func(*optionState)
 
 type optionState struct {
-	prometheusSubsystem string
-	upstreamAddr        string
-	upstreamCAPath      string
-	grpcPresharedKey    string
-	grpcDialOpts        []grpc.DialOption
-	cache               cache.Cache
-	concurrencyLimits   graph.ConcurrencyLimits
+	metricsEnabled        bool
+	prometheusSubsystem   string
+	upstreamAddr          string
+	upstreamCAPath        string
+	grpcPresharedKey      string
+	grpcDialOpts          []grpc.DialOption
+	cache                 cache.Cache
+	concurrencyLimits     graph.ConcurrencyLimits
+	remoteDispatchTimeout time.Duration
+}
+
+// MetricsEnabled enables issuing prometheus metrics
+func MetricsEnabled(enabled bool) Option {
+	return func(state *optionState) {
+		state.metricsEnabled = enabled
+	}
 }
 
 // PrometheusSubsystem sets the subsystem name for the prometheus metrics
@@ -84,6 +94,14 @@ func ConcurrencyLimits(limits graph.ConcurrencyLimits) Option {
 	}
 }
 
+// RemoteDispatchTimeout sets the maximum timeout for a remote dispatch.
+// Defaults to 60s (as defined in the remote dispatcher).
+func RemoteDispatchTimeout(remoteDispatchTimeout time.Duration) Option {
+	return func(state *optionState) {
+		state.remoteDispatchTimeout = remoteDispatchTimeout
+	}
+}
+
 // NewDispatcher initializes a Dispatcher that caches and redispatches
 // optionally to the provided upstream.
 func NewDispatcher(options ...Option) (dispatch.Dispatcher, error) {
@@ -97,7 +115,7 @@ func NewDispatcher(options ...Option) (dispatch.Dispatcher, error) {
 		opts.prometheusSubsystem = "dispatch_client"
 	}
 
-	cachingRedispatch, err := caching.NewCachingDispatcher(opts.cache, opts.prometheusSubsystem, &keys.CanonicalKeyHandler{})
+	cachingRedispatch, err := caching.NewCachingDispatcher(opts.cache, opts.metricsEnabled, opts.prometheusSubsystem, &keys.CanonicalKeyHandler{})
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +142,10 @@ func NewDispatcher(options ...Option) (dispatch.Dispatcher, error) {
 		if err != nil {
 			return nil, err
 		}
-		redispatch = remote.NewClusterDispatcher(v1.NewDispatchServiceClient(conn), conn, &keys.CanonicalKeyHandler{})
+		redispatch = remote.NewClusterDispatcher(v1.NewDispatchServiceClient(conn), conn, remote.ClusterDispatcherConfig{
+			KeyHandler:             &keys.CanonicalKeyHandler{},
+			DispatchOverallTimeout: opts.remoteDispatchTimeout,
+		})
 	}
 
 	cachingRedispatch.SetDelegate(redispatch)

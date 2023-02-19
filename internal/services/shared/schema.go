@@ -78,22 +78,28 @@ type AppliedSchemaChanges struct {
 
 	// RemovedObjectDefNames contains the names of the removed object definitions.
 	RemovedObjectDefNames []string
+
+	// NewCaveatDefNames contains the names of the newly added caveat definitions.
+	NewCaveatDefNames []string
+
+	// RemovedCaveatDefNames contains the names of the removed caveat definitions.
+	RemovedCaveatDefNames []string
 }
 
 // ApplySchemaChanges applies schema changes found in the validated changes struct, via the specified
 // ReadWriteTransaction.
 func ApplySchemaChanges(ctx context.Context, rwt datastore.ReadWriteTransaction, validated *ValidatedSchemaChanges) (*AppliedSchemaChanges, error) {
-	existingCaveats, err := rwt.ListCaveats(ctx)
+	existingCaveats, err := rwt.ListAllCaveats(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	existingObjectDefs, err := rwt.ListNamespaces(ctx)
+	existingObjectDefs, err := rwt.ListAllNamespaces(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	return ApplySchemaChangesOverExisting(ctx, rwt, validated, existingCaveats, existingObjectDefs)
+	return ApplySchemaChangesOverExisting(ctx, rwt, validated, datastore.DefinitionsOf(existingCaveats), datastore.DefinitionsOf(existingObjectDefs))
 }
 
 // ApplySchemaChangesOverExisting applies schema changes found in the validated changes struct, against
@@ -213,6 +219,8 @@ func ApplySchemaChangesOverExisting(
 		TotalOperationCount:   uint32(len(validated.compiled.ObjectDefinitions) + len(validated.compiled.CaveatDefinitions) + removedObjectDefNames.Len() + removedCaveatDefNames.Len()),
 		NewObjectDefNames:     validated.newObjectDefNames.Subtract(existingObjectDefNames).AsSlice(),
 		RemovedObjectDefNames: removedObjectDefNames.AsSlice(),
+		NewCaveatDefNames:     validated.newCaveatDefNames.Subtract(existingCaveatDefNames).AsSlice(),
+		RemovedCaveatDefNames: removedCaveatDefNames.AsSlice(),
 	}, nil
 }
 

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
+	humanize "github.com/dustin/go-humanize"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -21,6 +22,7 @@ import (
 	"github.com/authzed/spicedb/internal/middleware/consistency"
 	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/internal/namespace"
+	"github.com/authzed/spicedb/internal/relationships"
 	v1svc "github.com/authzed/spicedb/internal/services/v1"
 	"github.com/authzed/spicedb/internal/sharederrors"
 	"github.com/authzed/spicedb/pkg/datastore"
@@ -31,7 +33,7 @@ import (
 	"github.com/authzed/spicedb/pkg/tuple"
 )
 
-const defaultConnBufferSize = 1024 * 1204
+const defaultConnBufferSize = humanize.MiByte
 
 // DevContext holds the various helper types for running the developer calls.
 type DevContext struct {
@@ -132,8 +134,8 @@ func (dc *DevContext) RunV1InMemoryService() (*grpc.ClientConn, func(), error) {
 		MaxUpdatesPerWrite:    50,
 		MaxPreconditionsCount: 50,
 		MaximumAPIDepth:       50,
-	}, true)
-	ss := v1svc.NewSchemaServer(false, true)
+	})
+	ss := v1svc.NewSchemaServer(false)
 
 	v1.RegisterPermissionsServiceServer(s, ps)
 	v1.RegisterSchemaServiceServer(s, ss)
@@ -198,7 +200,7 @@ func loadTuples(ctx context.Context, tuples []*core.RelationTuple, rwt datastore
 			continue
 		}
 
-		err = validateTupleWrite(ctx, tpl, rwt)
+		err = relationships.ValidateRelationshipUpdates(ctx, rwt, []*core.RelationTupleUpdate{tuple.Touch(tpl)})
 		if err != nil {
 			devErr, wireErr := distinguishGraphError(ctx, err, devinterface.DeveloperError_RELATIONSHIP, 0, 0, tplString)
 			if devErr != nil {
@@ -322,12 +324,24 @@ func DistinguishGraphError(devContext *DevContext, dispatchError error, source d
 func distinguishGraphError(ctx context.Context, dispatchError error, source devinterface.DeveloperError_Source, line uint32, column uint32, context string) (*devinterface.DeveloperError, error) {
 	var nsNotFoundError sharederrors.UnknownNamespaceError
 	var relNotFoundError sharederrors.UnknownRelationError
+	var invalidRelError relationships.ErrInvalidSubjectType
 
 	if errors.Is(dispatchError, dispatch.ErrMaxDepth) {
 		return &devinterface.DeveloperError{
 			Message: dispatchError.Error(),
 			Source:  source,
 			Kind:    devinterface.DeveloperError_MAXIMUM_RECURSION,
+			Line:    line,
+			Column:  column,
+			Context: context,
+		}, nil
+	}
+
+	if errors.As(dispatchError, &invalidRelError) {
+		return &devinterface.DeveloperError{
+			Message: dispatchError.Error(),
+			Source:  source,
+			Kind:    devinterface.DeveloperError_INVALID_SUBJECT_TYPE,
 			Line:    line,
 			Column:  column,
 			Context: context,
@@ -346,18 +360,6 @@ func distinguishGraphError(ctx context.Context, dispatchError error, source devi
 	}
 
 	if errors.As(dispatchError, &relNotFoundError) {
-		return &devinterface.DeveloperError{
-			Message: dispatchError.Error(),
-			Source:  source,
-			Kind:    devinterface.DeveloperError_UNKNOWN_RELATION,
-			Line:    line,
-			Column:  column,
-			Context: context,
-		}, nil
-	}
-
-	var ire invalidRelationError
-	if errors.As(dispatchError, &ire) {
 		return &devinterface.DeveloperError{
 			Message: dispatchError.Error(),
 			Source:  source,
@@ -398,10 +400,6 @@ func rewriteACLError(ctx context.Context, err error) error {
 		return status.Errorf(codes.Internal, "internal error: %s", err)
 
 	default:
-		if errors.As(err, &invalidRelationError{}) {
-			return status.Errorf(codes.InvalidArgument, "%s", err)
-		}
-
 		log.Ctx(ctx).Err(err).Msg("unexpected graph error in devcontext")
 		return err
 	}

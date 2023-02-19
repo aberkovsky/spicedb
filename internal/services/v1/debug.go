@@ -2,11 +2,11 @@ package v1
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
-	"google.golang.org/protobuf/types/known/structpb"
 
 	cexpr "github.com/authzed/spicedb/internal/caveats"
 	"github.com/authzed/spicedb/pkg/datastore"
@@ -29,22 +29,22 @@ func ConvertCheckDispatchDebugInformation(
 		return nil, nil
 	}
 
-	caveats, err := reader.ListCaveats(ctx)
+	caveats, err := reader.ListAllCaveats(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	namespaces, err := reader.ListNamespaces(ctx)
+	namespaces, err := reader.ListAllNamespaces(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	defs := make([]compiler.SchemaDefinition, 0, len(namespaces)+len(caveats))
 	for _, caveat := range caveats {
-		defs = append(defs, caveat)
+		defs = append(defs, caveat.Definition)
 	}
 	for _, ns := range namespaces {
-		defs = append(defs, ns)
+		defs = append(defs, ns.Definition)
 	}
 
 	schema, _, err := generator.GenerateSchema(defs)
@@ -110,9 +110,9 @@ func convertCheckTrace(ctx context.Context, caveatContext map[string]any, ct *di
 			}
 		}
 
-		contextStruct, err := structpb.NewStruct(computedResult.ContextValues())
+		contextStruct, err := computedResult.ContextStruct()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("could not serialize context: %w. please report this error", err)
 		}
 
 		exprString, err := computedResult.ExpressionString()

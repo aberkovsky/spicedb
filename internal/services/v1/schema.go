@@ -2,7 +2,6 @@ package v1
 
 import (
 	"context"
-	"fmt"
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 	grpcvalidate "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/validator"
@@ -23,7 +22,7 @@ import (
 )
 
 // NewSchemaServer creates a SchemaServiceServer instance.
-func NewSchemaServer(additiveOnly, caveatsEnabled bool) v1.SchemaServiceServer {
+func NewSchemaServer(additiveOnly bool) v1.SchemaServiceServer {
 	return &schemaServer{
 		WithServiceSpecificInterceptors: shared.WithServiceSpecificInterceptors{
 			Unary: middleware.ChainUnaryServer(
@@ -35,8 +34,7 @@ func NewSchemaServer(additiveOnly, caveatsEnabled bool) v1.SchemaServiceServer {
 				usagemetrics.StreamServerInterceptor(),
 			),
 		},
-		additiveOnly:   additiveOnly,
-		caveatsEnabled: caveatsEnabled,
+		additiveOnly: additiveOnly,
 	}
 }
 
@@ -44,20 +42,19 @@ type schemaServer struct {
 	v1.UnimplementedSchemaServiceServer
 	shared.WithServiceSpecificInterceptors
 
-	additiveOnly   bool
-	caveatsEnabled bool
+	additiveOnly bool
 }
 
 func (ss *schemaServer) ReadSchema(ctx context.Context, in *v1.ReadSchemaRequest) (*v1.ReadSchemaResponse, error) {
 	readRevision, _ := consistency.MustRevisionFromContext(ctx)
 	ds := datastoremw.MustFromContext(ctx).SnapshotReader(readRevision)
 
-	nsDefs, err := ds.ListNamespaces(ctx)
+	nsDefs, err := ds.ListAllNamespaces(ctx)
 	if err != nil {
 		return nil, rewriteError(ctx, err)
 	}
 
-	caveatDefs, err := ds.ListCaveats(ctx)
+	caveatDefs, err := ds.ListAllCaveats(ctx)
 	if err != nil {
 		return nil, rewriteError(ctx, err)
 	}
@@ -68,11 +65,11 @@ func (ss *schemaServer) ReadSchema(ctx context.Context, in *v1.ReadSchemaRequest
 
 	schemaDefinitions := make([]compiler.SchemaDefinition, 0, len(nsDefs)+len(caveatDefs))
 	for _, caveatDef := range caveatDefs {
-		schemaDefinitions = append(schemaDefinitions, caveatDef)
+		schemaDefinitions = append(schemaDefinitions, caveatDef.Definition)
 	}
 
 	for _, nsDef := range nsDefs {
-		schemaDefinitions = append(schemaDefinitions, nsDef)
+		schemaDefinitions = append(schemaDefinitions, nsDef.Definition)
 	}
 
 	schemaText, _, err := generator.GenerateSchema(schemaDefinitions)
@@ -104,10 +101,6 @@ func (ss *schemaServer) WriteSchema(ctx context.Context, in *v1.WriteSchemaReque
 		return nil, rewriteError(ctx, err)
 	}
 	log.Ctx(ctx).Trace().Int("objectDefinitions", len(compiled.ObjectDefinitions)).Int("caveatDefinitions", len(compiled.CaveatDefinitions)).Msg("compiled namespace definitions")
-
-	if !ss.caveatsEnabled && len(compiled.CaveatDefinitions) > 0 {
-		return nil, fmt.Errorf("caveats are currently not supported")
-	}
 
 	// Do as much validation as we can before talking to the datastore.
 	validated, err := shared.ValidateSchemaChanges(ctx, compiled, ss.additiveOnly)

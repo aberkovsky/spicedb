@@ -73,7 +73,10 @@ type Config struct {
 	DispatchConcurrencyLimits      graph.ConcurrencyLimits
 	DispatchUpstreamAddr           string
 	DispatchUpstreamCAPath         string
+	DispatchUpstreamTimeout        time.Duration
+	DispatchClientMetricsEnabled   bool
 	DispatchClientMetricsPrefix    string
+	DispatchClusterMetricsEnabled  bool
 	DispatchClusterMetricsPrefix   string
 	Dispatcher                     dispatch.Dispatcher
 
@@ -81,11 +84,10 @@ type Config struct {
 	ClusterDispatchCacheConfig CacheConfig
 
 	// API Behavior
-	DisableV1SchemaAPI         bool
-	V1SchemaAdditiveOnly       bool
-	MaximumUpdatesPerWrite     uint16
-	MaximumPreconditionCount   uint16
-	ExperimentalCaveatsEnabled bool
+	DisableV1SchemaAPI       bool
+	V1SchemaAdditiveOnly     bool
+	MaximumUpdatesPerWrite   uint16
+	MaximumPreconditionCount uint16
 
 	// Additional Services
 	DashboardAPI util.HTTPServerConfig
@@ -227,6 +229,7 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 				grpc.WithUnaryInterceptor(otelgrpc.UnaryClientInterceptor()),
 				grpc.WithDefaultServiceConfig(balancer.BalancerServiceConfig),
 			),
+			combineddispatch.MetricsEnabled(c.DispatchClientMetricsEnabled),
 			combineddispatch.PrometheusSubsystem(c.DispatchClientMetricsPrefix),
 			combineddispatch.Cache(cc),
 			combineddispatch.ConcurrencyLimits(concurrencyLimits),
@@ -256,8 +259,10 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 
 		cachingClusterDispatch, err = clusterdispatch.NewClusterDispatcher(
 			dispatcher,
+			clusterdispatch.MetricsEnabled(c.DispatchClusterMetricsEnabled),
 			clusterdispatch.PrometheusSubsystem(c.DispatchClusterMetricsPrefix),
 			clusterdispatch.Cache(cdcc),
+			clusterdispatch.RemoteDispatchTimeout(c.DispatchUpstreamTimeout),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to configure cluster dispatch: %w", err)
@@ -318,12 +323,6 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 		MaximumAPIDepth:       c.DispatchMaxDepth,
 	}
 
-	caveatsOption := services.CaveatsDisabled
-	if c.ExperimentalCaveatsEnabled {
-		log.Ctx(ctx).Warn().Msg("experimental caveats support enabled")
-		caveatsOption = services.CaveatsEnabled
-	}
-
 	healthManager := health.NewHealthManager(dispatcher, ds)
 	grpcServer, err := c.GRPCServer.Complete(zerolog.InfoLevel,
 		func(server *grpc.Server) {
@@ -333,7 +332,6 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 				dispatcher,
 				v1SchemaServiceOption,
 				watchServiceOption,
-				caveatsOption,
 				permSysConfig,
 				lookupWatchServiceOption,
 			)
@@ -349,6 +347,7 @@ func (c *Config) Complete(ctx context.Context) (RunnableServer, error) {
 		return nil, err
 	}
 	closeables.AddCloser(gatewayCloser)
+	closeables.AddWithoutError(gatewayServer.Close)
 
 	dashboardServer, err := c.DashboardAPI.Complete(zerolog.InfoLevel, dashboard.NewHandler(
 		c.GRPCServer.Address,

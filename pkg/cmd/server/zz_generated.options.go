@@ -46,7 +46,10 @@ func (c *Config) ToOption() ConfigOption {
 		to.DispatchConcurrencyLimits = c.DispatchConcurrencyLimits
 		to.DispatchUpstreamAddr = c.DispatchUpstreamAddr
 		to.DispatchUpstreamCAPath = c.DispatchUpstreamCAPath
+		to.DispatchUpstreamTimeout = c.DispatchUpstreamTimeout
+		to.DispatchClientMetricsEnabled = c.DispatchClientMetricsEnabled
 		to.DispatchClientMetricsPrefix = c.DispatchClientMetricsPrefix
+		to.DispatchClusterMetricsEnabled = c.DispatchClusterMetricsEnabled
 		to.DispatchClusterMetricsPrefix = c.DispatchClusterMetricsPrefix
 		to.Dispatcher = c.Dispatcher
 		to.DispatchCacheConfig = c.DispatchCacheConfig
@@ -55,7 +58,6 @@ func (c *Config) ToOption() ConfigOption {
 		to.V1SchemaAdditiveOnly = c.V1SchemaAdditiveOnly
 		to.MaximumUpdatesPerWrite = c.MaximumUpdatesPerWrite
 		to.MaximumPreconditionCount = c.MaximumPreconditionCount
-		to.ExperimentalCaveatsEnabled = c.ExperimentalCaveatsEnabled
 		to.DashboardAPI = c.DashboardAPI
 		to.MetricsAPI = c.MetricsAPI
 		to.MiddlewareModification = c.MiddlewareModification
@@ -231,10 +233,31 @@ func WithDispatchUpstreamCAPath(dispatchUpstreamCAPath string) ConfigOption {
 	}
 }
 
+// WithDispatchUpstreamTimeout returns an option that can set DispatchUpstreamTimeout on a Config
+func WithDispatchUpstreamTimeout(dispatchUpstreamTimeout time.Duration) ConfigOption {
+	return func(c *Config) {
+		c.DispatchUpstreamTimeout = dispatchUpstreamTimeout
+	}
+}
+
+// WithDispatchClientMetricsEnabled returns an option that can set DispatchClientMetricsEnabled on a Config
+func WithDispatchClientMetricsEnabled(dispatchClientMetricsEnabled bool) ConfigOption {
+	return func(c *Config) {
+		c.DispatchClientMetricsEnabled = dispatchClientMetricsEnabled
+	}
+}
+
 // WithDispatchClientMetricsPrefix returns an option that can set DispatchClientMetricsPrefix on a Config
 func WithDispatchClientMetricsPrefix(dispatchClientMetricsPrefix string) ConfigOption {
 	return func(c *Config) {
 		c.DispatchClientMetricsPrefix = dispatchClientMetricsPrefix
+	}
+}
+
+// WithDispatchClusterMetricsEnabled returns an option that can set DispatchClusterMetricsEnabled on a Config
+func WithDispatchClusterMetricsEnabled(dispatchClusterMetricsEnabled bool) ConfigOption {
+	return func(c *Config) {
+		c.DispatchClusterMetricsEnabled = dispatchClusterMetricsEnabled
 	}
 }
 
@@ -291,13 +314,6 @@ func WithMaximumUpdatesPerWrite(maximumUpdatesPerWrite uint16) ConfigOption {
 func WithMaximumPreconditionCount(maximumPreconditionCount uint16) ConfigOption {
 	return func(c *Config) {
 		c.MaximumPreconditionCount = maximumPreconditionCount
-	}
-}
-
-// WithExperimentalCaveatsEnabled returns an option that can set ExperimentalCaveatsEnabled on a Config
-func WithExperimentalCaveatsEnabled(experimentalCaveatsEnabled bool) ConfigOption {
-	return func(c *Config) {
-		c.ExperimentalCaveatsEnabled = experimentalCaveatsEnabled
 	}
 }
 

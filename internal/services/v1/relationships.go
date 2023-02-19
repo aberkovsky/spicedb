@@ -2,6 +2,7 @@ package v1
 
 import (
 	"context"
+	"time"
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 	grpcvalidate "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/validator"
@@ -13,6 +14,7 @@ import (
 	"github.com/authzed/spicedb/internal/middleware"
 	datastoremw "github.com/authzed/spicedb/internal/middleware/datastore"
 	"github.com/authzed/spicedb/internal/middleware/handwrittenvalidation"
+	"github.com/authzed/spicedb/internal/middleware/streamtimeout"
 	"github.com/authzed/spicedb/internal/middleware/usagemetrics"
 	"github.com/authzed/spicedb/internal/namespace"
 	"github.com/authzed/spicedb/internal/relationships"
@@ -38,24 +40,27 @@ type PermissionsServerConfig struct {
 	// MaximumAPIDepth is the default/starting depth remaining for API calls made
 	// to the permissions server.
 	MaximumAPIDepth uint32
+
+	// StreamingAPITimeout is the timeout for streaming APIs when no response has been
+	// recently received.
+	StreamingAPITimeout time.Duration
 }
 
 // NewPermissionsServer creates a PermissionsServiceServer instance.
 func NewPermissionsServer(
 	dispatch dispatch.Dispatcher,
 	config PermissionsServerConfig,
-	caveatsEnabled bool,
 ) v1.PermissionsServiceServer {
 	configWithDefaults := PermissionsServerConfig{
 		MaxPreconditionsCount: defaultIfZero(config.MaxPreconditionsCount, 1000),
 		MaxUpdatesPerWrite:    defaultIfZero(config.MaxUpdatesPerWrite, 1000),
 		MaximumAPIDepth:       defaultIfZero(config.MaximumAPIDepth, 50),
+		StreamingAPITimeout:   defaultIfZero(config.StreamingAPITimeout, 30*time.Second),
 	}
 
 	return &permissionServer{
-		dispatch:       dispatch,
-		config:         configWithDefaults,
-		caveatsEnabled: caveatsEnabled,
+		dispatch: dispatch,
+		config:   configWithDefaults,
 		WithServiceSpecificInterceptors: shared.WithServiceSpecificInterceptors{
 			Unary: middleware.ChainUnaryServer(
 				grpcvalidate.UnaryServerInterceptor(true),
@@ -66,6 +71,7 @@ func NewPermissionsServer(
 				grpcvalidate.StreamServerInterceptor(true),
 				handwrittenvalidation.StreamServerInterceptor,
 				usagemetrics.StreamServerInterceptor(),
+				streamtimeout.MustStreamServerInterceptor(configWithDefaults.StreamingAPITimeout),
 			),
 		},
 	}
@@ -75,9 +81,8 @@ type permissionServer struct {
 	v1.UnimplementedPermissionsServiceServer
 	shared.WithServiceSpecificInterceptors
 
-	dispatch       dispatch.Dispatcher
-	config         PermissionsServerConfig
-	caveatsEnabled bool
+	dispatch dispatch.Dispatcher
+	config   PermissionsServerConfig
 }
 
 func (ps *permissionServer) checkFilterComponent(ctx context.Context, objectType, optionalRelation string, ds datastore.Reader) error {
@@ -167,12 +172,6 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 				ctx,
 				NewDuplicateRelationshipErr(update),
 			)
-		}
-
-		if !ps.caveatsEnabled {
-			if update.Relationship.OptionalCaveat != nil && update.Relationship.OptionalCaveat.CaveatName != "" {
-				return nil, status.Errorf(codes.InvalidArgument, "caveats are currently not supported")
-			}
 		}
 	}
 
