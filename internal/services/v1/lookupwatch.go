@@ -100,7 +100,9 @@ func (lw *lookupWatchServer) WatchAccessibleResources(req *v1lookupwatch.WatchAc
 		select {
 		case update, ok := <-updates:
 			if ok {
-				return lw.processWatchResponse(&ctx, req, update, &stream)
+				if err := lw.processWatchResponse(&ctx, req, update, &stream); err != nil {
+					return status.Errorf(codes.Internal, "watch error: %s", err)
+				}
 			}
 		case err := <-errchan:
 			switch {
