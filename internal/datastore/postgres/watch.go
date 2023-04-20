@@ -16,7 +16,8 @@ import (
 )
 
 const (
-	watchSleep = 100 * time.Millisecond
+	watchSleep         = 100 * time.Millisecond
+	watchOverflowSleep = 500 * time.Millisecond
 )
 
 type revisionWithXid struct {
@@ -32,7 +33,7 @@ var (
 	SELECT %[1]s, %[2]s FROM %[3]s
 	WHERE %[1]s >= pg_snapshot_xmax($1) OR (
 		%[1]s >= pg_snapshot_xmin($1) AND NOT pg_visible_in_snapshot(%[1]s, $1)
-	) ORDER BY pg_xact_commit_timestamp(%[1]s::xid), %[1]s;`, colXID, colSnapshot, tableTransaction)
+	) ORDER BY pg_xact_commit_timestamp(%[1]s::xid), %[1]s LIMIT 250;`, colXID, colSnapshot, tableTransaction)
 
 	queryChanged = psql.Select(
 		colNamespace,
@@ -90,6 +91,17 @@ func (pgd *pgDatastore) Watch(
 					return
 				}
 
+				for int(pgd.watchBufferLength) <= len(updates)+len(changesToWrite) {
+					sleep := time.NewTimer(watchOverflowSleep)
+					select {
+					case <-sleep.C:
+						break
+					case <-ctx.Done():
+						errs <- datastore.NewWatchCanceledErr()
+						return
+					}
+				}
+
 				for _, changeToWrite := range changesToWrite {
 					changeToWrite := changeToWrite
 
@@ -101,7 +113,10 @@ func (pgd *pgDatastore) Watch(
 						return
 					}
 
-					currentTxn = changeToWrite.Revision.(revisionWithXid).postgresRevision
+					//currentTxn = changeToWrite.Revision.(revisionWithXid).postgresRevision
+					newRev := changeToWrite.Revision.(revisionWithXid).postgresRevision
+					newRev.snapshot = newRev.snapshot.union(currentTxn.snapshot)
+					currentTxn = newRev
 				}
 			} else {
 				sleep := time.NewTimer(watchSleep)

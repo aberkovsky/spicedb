@@ -177,6 +177,36 @@ func (s pgSnapshot) anyTXVisible(first uint64, others []uint64) bool {
 	return false
 }
 
+func (s pgSnapshot) union(src pgSnapshot) pgSnapshot {
+	if s.xmax > src.xmax {
+		// Nothing to do
+		return s
+	}
+
+	if s.xmax < src.xmin {
+		// error ???
+		return src
+	}
+
+	inProgress := make(map[uint64]bool, len(src.xipList))
+	for _, txid := range src.xipList {
+		inProgress[txid] = true
+	}
+
+	newSnapshot := s
+	max := s.xmax
+	if s.xmax < src.xmax {
+		max = src.xmax
+	}
+	for txid := s.xmin; txid < max; txid++ {
+		if !inProgress[txid] || txid < src.xmin {
+			newSnapshot = newSnapshot.markComplete(txid)
+		}
+	}
+
+	return newSnapshot
+}
+
 // markComplete will create a new snapshot where the specified transaction will be marked as
 // complete and visible. For example, if txid was present in the xip list of this snapshot
 // it will be removed and the xmin and xmax will be adjusted accordingly.
